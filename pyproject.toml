@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "big-discord-bot"
+version = "0.1.0"
+description = "Secure RSS and X feed publisher for Discord forum channels"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "HiLleywyn" }]
+dependencies = [
+  "aiosqlite==0.22.1",
+  "discord.py==2.7.1",
+  "feedparser==6.0.14",
+  "httpx2>=2.12,<3",
+  "python-dotenv>=1.2,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.19,<2",
+  "pip-audit>=2.10,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1.2,<2",
+  "pytest-cov>=7,<8",
+  "ruff>=0.14,<1",
+]
+
+[project.scripts]
+big = "bigbot.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bigbot"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --strict-config"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["bigbot"]
+omit = [
+  "src/bigbot/__main__.py",
+  "src/bigbot/bot.py",
+  "src/bigbot/publisher.py",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+packages = ["bigbot"]
