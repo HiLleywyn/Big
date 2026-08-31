@@ -33,6 +33,23 @@ class DeliveryState(StrEnum):
     PENDING = "pending"
     POSTED = "posted"
     SKIPPED = "skipped"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+class StoryState(StrEnum):
+    NEW = "new"
+    DEVELOPING = "developing"
+    BREAKING = "breaking"
+    UPDATED = "updated"
+    STALE = "stale"
+    MERGED = "merged"
+
+
+class PublicationState(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    FAILED = "failed"
     UNCERTAIN = "uncertain"
 
 
@@ -55,6 +72,9 @@ class Feed:
     next_poll_at: datetime
     last_polled_at: datetime | None
     last_error: str | None
+    default_tags: tuple[str, ...] = ()
+    failure_count: int = 0
+    publisher: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,6 +86,7 @@ class FeedItem:
     author: str | None
     published_at: datetime | None
     image_url: str | None = None
+    publisher: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +96,54 @@ class FetchResult:
     etag: str | None = None
     last_modified: str | None = None
     not_modified: bool = False
+
+
+@dataclass(frozen=True)
+class Article:
+    id: int
+    feed_id: int | None
+    story_id: int | None
+    external_id: str
+    publisher: str
+    title: str
+    url: str
+    canonical_url: str
+    published_at: datetime | None
+    description: str
+    discovered_at: datetime
+    normalized_title: str
+    entities: tuple[str, ...]
+    keywords: tuple[str, ...]
+    numbers: tuple[str, ...]
+    event_terms: tuple[str, ...]
+    fingerprint: str
+    delivery_state: DeliveryState
+    delivery_error: str | None
+
+
+@dataclass(frozen=True)
+class Story:
+    id: int
+    guild_id: int
+    forum_channel_id: int
+    title: str
+    summary: str
+    state: StoryState
+    publication_state: PublicationState
+    discord_thread_id: int | None
+    discord_starter_message_id: int | None
+    tags: tuple[str, ...]
+    normalized_title: str
+    entities: tuple[str, ...]
+    keywords: tuple[str, ...]
+    numbers: tuple[str, ...]
+    event_terms: tuple[str, ...]
+    first_published_at: datetime | None
+    last_published_at: datetime | None
+    last_updated_at: datetime
+    merged_into_story_id: int | None = None
+    primary_article_id: int | None = None
+    primary_priority: int = 0
 
 
 @dataclass(frozen=True)

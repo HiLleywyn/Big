@@ -5,16 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "big-discord-bot"
 version = "0.1.0"
-description = "Secure RSS and X feed publisher for Discord forum channels"
+description = "Story-clustering news aggregator for Discord forum channels"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "HiLleywyn" }]
 dependencies = [
   "aiosqlite==0.22.1",
+  "aiohttp==3.14.3",
   "discord.py==2.7.1",
   "feedparser==6.0.14",
   "httpx2>=2.12,<3",
+  "PyYAML==6.0.3",
   "python-dotenv>=1.2,<2",
 ]
 
@@ -26,6 +28,7 @@ dev = [
   "pytest-asyncio>=1.2,<2",
   "pytest-cov>=7,<8",
   "ruff>=0.14,<1",
+  "types-PyYAML==6.0.12.20260815",
 ]
 
 [project.scripts]

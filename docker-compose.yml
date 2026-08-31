@@ -7,6 +7,12 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      BIG_DRY_RUN: ${BIG_DRY_RUN:-true}
+      BIG_HEALTH_HOST: 0.0.0.0
+      BIG_HEALTH_PORT: 8787
+    ports:
+      - "127.0.0.1:8787:8787"
     volumes:
       - big-data:/app/data
     read_only: true

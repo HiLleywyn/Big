@@ -1,72 +1,148 @@
 # Big
 
-Big is a focused Discord bot that turns RSS/Atom entries and posts from public X
-accounts into individual Discord forum threads. It uses a normal Discord bot account,
-official Discord application commands, and X's documented API v2. It never logs in as a
-Discord user.
+Big is an open-source live news system for Discord Forum Channels.
+
+It does not treat every article as a new post. Big normalizes and clusters reporting from
+multiple publishers into one evolving story:
+
+```text
+RSS and Atom articles
+        ↓
+normalized facts and event signals
+        ↓
+one story cluster
+        ↓
+one Discord forum post
+        ↓
+sources, updates, and discussion
+```
 
 ## What it does
 
-- Polls any public HTTPS RSS or Atom feed.
-- Polls public X accounts when an official X API bearer token is configured.
-- Creates one forum thread per new item, with the source, author, timestamp, summary, and
-  image when available.
-- Applies configured forum tags.
-- Optionally replies beneath each new thread with a web-grounded OpenRouter debate brief
-  whose external facts and statistics are accompanied by source links.
-- Stores feeds, cursors, conditional HTTP metadata, delivery states, and an admin audit log
-  in SQLite.
-- Deduplicates every item across restarts.
-- Fails closed after ambiguous Discord responses: the delivery becomes `uncertain` and is
-  not blindly retried.
-- Exposes `/feed add-rss`, `/feed add-x`, `/feed list`, `/feed poll`, `/feed pause`,
-  `/feed resume`, and `/feed remove` to members with **Manage Server**.
+- Polls configurable RSS and Atom feeds with conditional HTTP requests and retry backoff.
+- Deduplicates tracking URLs, feed refreshes, syndicated copies, and previously seen items.
+- Compares titles, descriptions, entities, keywords, numbers, event verbs, and publication
+  times before attaching an article to an existing story.
+- Rejects conflicting events and numerical claims to avoid merging stories that only share a
+  broad topic.
+- Creates one Discord forum post per story, then edits its source list as coverage arrives.
+- Posts significant developments as replies in the same thread.
+- Tracks `NEW`, `DEVELOPING`, `BREAKING`, `UPDATED`, `STALE`, and `MERGED` states.
+- Applies only tags that currently exist on the destination forum, up to Discord's limit.
+- Persists feeds, articles, story relationships, Discord IDs, state, delivery outcomes, and
+  moderator history in SQLite.
+- Fails closed when a Discord write may have succeeded but cannot be confirmed.
+- Exposes local health and readiness endpoints on port `8787`.
 
-There is no message-content intent and no prefix-command parser. Big only reads its own
-slash commands and the external feeds an administrator explicitly configures.
+The deterministic clustering engine is the default and needs no paid AI service. It is behind
+a small interface so a local embedding strategy can be added later without coupling feed
+ingestion, persistence, or Discord publishing to it.
+
+## Project layout
+
+```text
+src/bigbot/
+  feeds/             Async RSS/Atom and optional X adapters
+  normalization.py  URL, headline, entity, keyword, number, and event extraction
+  clustering.py     Swappable deterministic story clustering engine
+  classification.py Forum tag classification
+  database.py        SQLite repositories and versioned migrations
+  service.py         Ingestion, deduplication, clustering, retry, and story lifecycle
+  publisher.py       Discord Forum Channel adapter
+  bot.py             Discord client and /news administration commands
+  health.py          Health, readiness, and status HTTP endpoints
+  config.py          Environment and YAML configuration
+```
 
 ## Discord setup
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications),
-   add a bot, and reset/copy its token.
-2. In **OAuth2 > URL Generator**, select the `bot` and `applications.commands` scopes.
-3. Grant the bot **View Channels**, **Send Messages**, **Create Public Threads**,
-   **Send Messages in Threads**, and **Embed Links** in the destination forum channels.
-4. Enable Developer Mode in Discord if you need to copy forum tag IDs.
-5. Copy `.env.example` to `.env`, set `DISCORD_TOKEN`, and optionally set
-   `BIG_GUILD_ID` to your test server ID. Guild-scoped commands appear immediately;
-   globally synced commands can take longer to propagate.
+1. Create an application and bot in the
+   [Discord Developer Portal](https://discord.com/developers/applications).
+2. Invite it with the `bot` and `applications.commands` scopes.
+3. Grant it View Channels, Send Messages, Create Public Threads, Send Messages in Threads,
+   Manage Threads, and Embed Links in the target forum.
+4. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
+5. Copy `config.example.yaml` to `config.yaml`, replace the example IDs and feed URLs, then
+   start Big.
 
-Big does not need Administrator permission.
+Big uses a registered bot account, does not request Message Content intent, and does not log in
+as a user.
 
-## X setup
+## Configuration
 
-RSS works without third-party credentials. X feeds require access to the official X API
-and an app-only bearer token in `X_BEARER_TOKEN`. Big resolves usernames through
-`GET /2/users/by/username/:username` and reads posts through
-`GET /2/users/:id/tweets`. If no token is present, only `/feed add-x` is disabled.
+Secrets belong in `.env`. Feed and clustering policy belongs in `config.yaml`.
 
-API access and pricing are controlled by X and can change independently of Big. A 429 is
-recorded as a feed error; Big does not hammer the endpoint.
+```yaml
+guild_id: 123456789012345678
+forum_channel_id: 123456789012345678
+polling_interval_seconds: 900
 
-## AI briefings with OpenRouter
+clustering:
+  threshold: 0.68
+  window_hours: 72
+  stale_after_hours: 96
 
-Set `OPENROUTER_API_KEY` to enable a second message beneath each forum starter. The default
-model is `openrouter/auto`; override it with `BIG_OPENROUTER_MODEL`. Big uses OpenRouter's
-current `openrouter:web_search` server tool, caps each item to two searches/eight results,
-and appends the returned citation URLs to the Discord reply.
+update_behavior:
+  post_major_updates: true
+  post_source_updates: false
 
-The model is instructed to provide a neutral debate brief with a summary, sourced context,
-and a fair map of material competing interpretations. Feed content is explicitly treated
-as untrusted input. If web search returns no URL citations, Big refuses to post the AI
-reply. This is a research starting point, not a guarantee that a model interpreted every
-source correctly; every reply is labeled accordingly.
+source_priorities:
+  Reuters: 100
+  AP: 95
 
-Web search and model use consume OpenRouter credits per new item. Disable enrichment by
-leaving `OPENROUTER_API_KEY` empty, or disable external search with
-`BIG_AI_WEB_SEARCH=false` (not recommended when factual context is desired). Big sends
-`provider.data_collection=deny` and defaults to zero-data-retention endpoints through
-`BIG_AI_ZDR=true`.
+feeds:
+  - name: Markets Wire
+    publisher: Reuters
+    url: https://publisher.example/markets.xml
+    default_tags: [Markets]
+```
+
+Each feed can override `forum_channel_id`. Default tags are combined with local automatic
+classification, but the publisher resolves names against the forum's current `available_tags`
+before sending anything. A required-tag forum fails safely when no configured tag exists.
+
+The first successful poll is capped by `BIG_MAX_BACKFILL` so enabling a feed cannot flood a
+forum. Older entries are recorded as skipped and remain deduplicated after restarts.
+
+## Story clustering
+
+The default engine uses a configurable threshold and time window. Its score combines:
+
+- normalized headline token overlap and sequence similarity
+- named entity overlap
+- extracted keyword overlap
+- normalized description similarity
+- publication-time proximity
+- event compatibility, such as `cut` versus `raise`
+- numerical compatibility, such as `25 bps` versus `50 bps`
+
+A support gate requires agreement across multiple signals. A score alone cannot merge stories
+with conflicting event verbs. The examples in the test suite cover paraphrased rate decisions,
+same-topic but distinct events, numerical conflicts, and unrelated stories.
+
+Canonical URL normalization removes common tracking parameters, fragments, default ports, and
+query ordering differences. Database uniqueness rules add protection across feed refreshes and
+process restarts.
+
+## Commands
+
+Members need Manage Server to change feeds or clusters.
+
+```text
+/news status
+/news feeds
+/news add-feed name url forum [interval_minutes] [default_tags]
+/news remove-feed feed_id
+/news refresh [feed_id]
+/news story story_id
+/news merge target_story_id source_story_id
+/news split article_id
+/news reprocess article_id
+```
+
+`merge` moves the source cluster into the target and archives the old Discord thread. `split`
+moves one article into a fresh story and forum post. `reprocess` only retries a confirmed failed
+write. It refuses uncertain writes because blindly replaying one could create duplicates.
 
 ## Run locally
 
@@ -77,52 +153,38 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
-# Edit .env, then:
+Copy-Item config.example.yaml config.yaml
 big doctor
 big run
 ```
 
-The process has no network port. It opens outbound HTTPS connections to Discord, the
-configured feed origins, and (when enabled) `api.x.com`.
-
-On first startup, Big creates `data/big.db`. Back up that file to preserve feed definitions
-and deduplication history.
-
-## Commands
+Health endpoints:
 
 ```text
-/feed add-rss name url forum [interval_minutes] [tag_ids]
-/feed add-x name username forum [interval_minutes] [include_replies] [include_reposts] [tag_ids]
-/feed list
-/feed poll feed_id
-/feed pause feed_id
-/feed resume feed_id
-/feed remove feed_id
+http://127.0.0.1:8787/healthz
+http://127.0.0.1:8787/readyz
+http://127.0.0.1:8787/status
 ```
 
-`tag_ids` is a comma-separated list of up to five IDs. Add a tag when the destination
-forum requires one.
-
-On a feed's first successful poll, Big posts only the newest `BIG_MAX_BACKFILL` items so a
-new subscription cannot flood a forum. Later polls rely on persistent item IDs and X's
-`since_id` cursor.
+Set `BIG_DRY_RUN=true` to run ingestion, clustering, persistence, and health checks without a
+Discord token or Discord writes.
 
 ## Docker
 
-```powershell
-docker build -t big .
-docker run --name big --env-file .env -v big-data:/app/data big
-```
-
-Or use the hardened Compose profile (read-only root filesystem, dropped Linux capabilities,
-and a persistent database volume):
+The Compose service defaults to dry-run mode, binds health endpoints to localhost, runs as a
+non-root user, drops Linux capabilities, and uses a read-only root filesystem.
 
 ```powershell
-docker compose up -d --build
-docker compose logs -f big
+docker compose -f docker-compose.yml up -d --build
+docker compose -f docker-compose.yml ps
+Invoke-RestMethod http://127.0.0.1:8787/readyz
 ```
 
-The image runs as an unprivileged user and stores its database in `/app/data`.
+For a real Discord run, set `BIG_DRY_RUN=false` and `DISCORD_TOKEN` in `.env`. Mount a completed
+`config.yaml` at `/app/config.yaml`, or add feeds after startup with `/news add-feed`.
+
+SQLite data is stored in the `big-data` volume at `/app/data/big.db`. Back up that file to retain
+feed definitions, story history, and restart-safe deduplication.
 
 ## Development
 
@@ -130,26 +192,27 @@ The image runs as an unprivileged user and stores its database in `/app/data`.
 ruff check .
 ruff format --check .
 mypy src
-pytest --cov=bigbot --cov-report=term-missing
+pytest --cov=bigbot --cov-report=term-missing --cov-fail-under=80
+pip-audit
 python -m build
 ```
 
-GitHub Actions runs these checks on pushes and pull requests. Dependabot is configured for
-Python packages and GitHub Actions.
+GitHub Actions runs the same checks and boots the container in dry-run mode before accepting the
+build. Tests cover normalization, URL deduplication, story clustering, state transitions,
+ambiguous Discord outcomes, bounded backfill, migrations, RSS parsing, and security controls.
 
-## Security notes
+## Security and reliability
 
-- Secrets are read from environment variables and are never stored in SQLite.
-- OpenRouter web-derived context is only posted when the response includes URL citation
-  annotations; the original feed source is always listed separately.
-- RSS URLs must be HTTPS, must use port 443, and must resolve entirely to public IPs.
-  Redirects are rejected and response size is bounded.
-- External text is reduced to plain text and Discord mentions are neutralized.
-- Feed administration is server-only and requires Discord's Manage Server permission.
-- Every delivery is claimed before publishing. A timeout after submission is treated as an
-  unknown outcome, not permission to issue the same write again.
-- Deleting a feed also deletes its delivery history. Re-adding that feed can therefore
-  repost up to the configured initial backfill.
+- Tokens stay in environment variables and are never stored in Discord or SQLite.
+- RSS URLs are restricted to public HTTPS targets with redirect and response-size controls.
+- Feed text is sanitized before it reaches Discord embeds.
+- Mentions are disabled for bot-authored content.
+- Stable external IDs, canonical URLs, fingerprints, and database constraints prevent reposts.
+- Discord rate limits are handled by discord.py. Unknown write outcomes are persisted as
+  `uncertain` and require manual review.
+- Structured JSON logs include feed, story, article, and clustering context needed to explain
+  each routing decision.
 
-Report security issues privately through GitHub's security advisory flow rather than a
-public issue.
+## License
+
+MIT

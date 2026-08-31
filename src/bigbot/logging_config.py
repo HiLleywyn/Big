@@ -14,7 +14,16 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in ("event", "feed_id", "guild_id", "channel_id", "external_id"):
+        for key in (
+            "event",
+            "feed_id",
+            "guild_id",
+            "channel_id",
+            "external_id",
+            "story_id",
+            "article_id",
+            "cluster_score",
+        ):
             if value := getattr(record, key, None):
                 payload[key] = value
         if record.exc_info:
@@ -27,4 +36,5 @@ def configure_logging(level: str) -> None:
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level, handlers=[handler], force=True)
     logging.getLogger("discord").setLevel(logging.INFO)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

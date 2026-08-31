@@ -36,5 +36,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - run: docker compose -f docker-compose.yml config --quiet
       - run: docker build --tag big:test .
-      - run: docker run --rm --env BIG_DATABASE_PATH=/tmp/big.db big:test big doctor
+      - run: >-
+          docker run --detach --name big-ci
+          --publish 127.0.0.1:8787:8787
+          --env BIG_DRY_RUN=true
+          --env BIG_DATABASE_PATH=/tmp/big.db
+          big:test
+      - name: Verify container readiness
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8787/readyz; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs big-ci
+          exit 1
+      - if: always()
+        run: docker rm --force big-ci || true

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from bigbot.config import ConfigurationError, load_settings
+from bigbot.config import ConfigurationError, load_app_config, load_settings
 
 
 def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
@@ -34,3 +34,43 @@ def test_invalid_boolean_fails_closed(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BIG_AI_ZDR", "sometimes")
     with pytest.raises(ConfigurationError, match="true or false"):
         load_settings()
+
+
+def test_yaml_feed_configuration(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+guild_id: 1
+forum_channel_id: 2
+clustering:
+  threshold: 0.7
+  window_hours: 48
+feeds:
+  - name: Wire
+    publisher: Wire Service
+    url: https://example.com/rss
+    default_tags: [World]
+""",
+        encoding="utf-8",
+    )
+    config = load_app_config(path)
+    assert config.clustering.threshold == 0.7
+    assert config.clustering.window_hours == 48
+    assert config.feeds[0].default_tags == ("World",)
+
+
+def test_yaml_rejects_string_boolean(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+update_behavior:
+  post_major_updates: "false"
+feeds:
+  - name: Wire
+    url: https://example.com/rss
+    interval_seconds: 30
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="true or false"):
+        load_app_config(path)

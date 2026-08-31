@@ -1,0 +1,39 @@
+# Discord IDs are integers. A feed can override forum_channel_id when needed.
+guild_id: 123456789012345678
+forum_channel_id: 123456789012345678
+polling_interval_seconds: 900
+
+clustering:
+  threshold: 0.68
+  window_hours: 72
+  stale_after_hours: 96
+
+update_behavior:
+  post_major_updates: true
+  post_source_updates: false
+
+tag_mappings:
+  Politics: [election, government, president, senate, vote]
+  World: [diplomat, international, nation, war]
+  Markets: [bond, fed, market, rate, stock]
+  Business: [company, earnings, merger, revenue]
+  Technology: [ai, chip, software, startup]
+  Crypto: [bitcoin, blockchain, crypto, ethereum]
+  Science: [climate, research, science, space]
+  Security: [breach, cyber, hack, malware]
+  Breaking: [breaking, urgent]
+  Developing: [developing, live, update]
+
+source_priorities:
+  Reuters: 100
+  AP: 95
+
+feeds:
+  - name: Reuters Markets
+    publisher: Reuters
+    url: https://example.com/reuters-markets.rss
+    default_tags: [Markets]
+  - name: AP World
+    publisher: AP
+    url: https://example.com/ap-world.rss
+    default_tags: [World]

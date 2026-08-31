@@ -113,6 +113,7 @@ def _entry_to_item(entry: Any, feed: Any) -> FeedItem:
         author=author,
         published_at=published_at,
         image_url=_entry_image(entry),
+        publisher=str(feed.get("title") or "") or None,
     )
 
 
