@@ -15,6 +15,7 @@ from bigbot.clustering import DeterministicClusterer
 from bigbot.config import Settings
 from bigbot.database import Database, DuplicateFeedError
 from bigbot.domain import Feed, FeedKind, FeedState
+from bigbot.enrichment import build_story_analyzer
 from bigbot.feeds.base import FeedSource
 from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
@@ -103,6 +104,8 @@ class BigBot(commands.Bot):
             retention_after_days=config.retention.clear_after_days,
             retention_action=config.retention.action,
             retention_batch_size=config.retention.batch_size,
+            analyzer=build_story_analyzer(self.settings),
+            related_story_limit=self.settings.related_story_limit,
         )
 
         async def health_status() -> dict[str, object]:

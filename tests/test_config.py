@@ -20,6 +20,7 @@ def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
     assert settings.ai_web_search
     assert settings.ai_zdr
     assert settings.openrouter_model == "openrouter/auto"
+    assert settings.related_story_limit == 8
 
 
 def test_run_requires_discord_token(monkeypatch, tmp_path) -> None:
@@ -33,6 +34,13 @@ def test_invalid_boolean_fails_closed(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BIG_AI_ZDR", "sometimes")
     with pytest.raises(ConfigurationError, match="true or false"):
+        load_settings()
+
+
+def test_invalid_related_story_limit_fails_closed(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIG_RELATED_STORY_LIMIT", "21")
+    with pytest.raises(ConfigurationError, match="BIG_RELATED_STORY_LIMIT"):
         load_settings()
 
 

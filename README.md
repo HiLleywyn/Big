@@ -82,7 +82,35 @@ BIG_GUILD_ID        Optional dev guild for fast slash-command sync
 BIG_DATABASE_PATH   SQLite path, default data/big.db
 BIG_HEALTH_PORT     Local health port, default 8787
 X_BEARER_TOKEN      Only required for official X feeds
+OPENROUTER_API_KEY  Optional, enables story-level OpenRouter analysis
+BIG_OPENROUTER_MODEL OpenRouter model, default openrouter/auto
+BIG_AI_WEB_SEARCH   Allow OpenRouter web search, default true
+BIG_AI_ZDR          Require zero data retention routing, default true
+BIG_RELATED_STORY_LIMIT Maximum bounded relationship candidates, default 8
 ```
+
+### Story analysis
+
+When `OPENROUTER_API_KEY` is configured, Big creates one shared OpenRouter client for the
+`FeedService`. The client is closed with the service. RSS, Atom, and X all retain the same path:
+
+```text
+feed adapter -> process_item -> normalize -> deduplicate -> cluster -> persist -> analyze -> publish
+```
+
+Analysis always runs after deterministic clustering and reads every stored article in the story.
+It never decides whether two reports belong to the same story. A successful result is stored on
+the story and rendered in the existing Discord starter post. A failed result is recorded on the
+story and the deterministic summary is published or retained.
+
+OpenRouter receives a bounded list of recent published stories when relationship detection is
+enabled. Returned IDs are rejected unless they appeared in that exact list. Accepted direct
+relationships are stored once as an unordered pair, and both Discord starter posts receive a
+reciprocal thread link. Shared categories, tags, names, or places are not enough for a relationship.
+
+`BIG_AI_WEB_SEARCH=true` allows the configured model to use OpenRouter web search. Structured JSON
+Schema output is required and every returned field is validated before persistence. Keep
+`BIG_AI_ZDR=true` unless you intentionally choose providers without zero data retention support.
 
 ```yaml
 guild_id: 123456789012345678

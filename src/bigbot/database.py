@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from bigbot.domain import (
+    AnalysisState,
     Article,
     DeliveryState,
     Feed,
@@ -170,11 +171,30 @@ CREATE INDEX idx_stories_cleanup
     ON stories (cleared_at, last_updated_at, state);
 """
 
+STORY_ANALYSIS_SCHEMA = """
+ALTER TABLE stories ADD COLUMN analysis TEXT;
+ALTER TABLE stories ADD COLUMN analysis_state TEXT NOT NULL DEFAULT 'disabled'
+    CHECK (analysis_state IN ('disabled','ready','failed'));
+ALTER TABLE stories ADD COLUMN analysis_error TEXT;
+ALTER TABLE stories ADD COLUMN analysis_updated_at TEXT;
+
+CREATE TABLE story_relationships (
+    story_id_low INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    story_id_high INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (story_id_low, story_id_high),
+    CHECK (story_id_low < story_id_high)
+);
+
+CREATE INDEX idx_story_relationships_high ON story_relationships (story_id_high);
+"""
+
 MIGRATIONS = (
     (1, SCHEMA),
     (2, STORY_SCHEMA),
     (3, FEED_PUBLISHER_SCHEMA),
     (4, CLEAR_STORIES_SCHEMA),
+    (5, STORY_ANALYSIS_SCHEMA),
 )
 
 
@@ -662,6 +682,128 @@ class Database:
             "SELECT * FROM articles WHERE story_id = ? ORDER BY published_at, id", (story_id,)
         )
         return [_article_from_row(row) async for row in cursor]
+
+    async def relationship_candidates(
+        self,
+        story: Story,
+        *,
+        since: datetime,
+        limit: int,
+    ) -> list[Story]:
+        if limit <= 0:
+            return []
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE guild_id = ? AND id != ? AND state != 'merged'
+              AND discord_thread_id IS NOT NULL AND last_updated_at >= ?
+            ORDER BY last_updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (story.guild_id, story.id, since.isoformat(), limit),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def save_story_analysis(
+        self,
+        story_id: int,
+        *,
+        analysis: str,
+        related_story_ids: tuple[int, ...],
+    ) -> None:
+        story = await self.get_story(story_id)
+        if story is None:
+            raise ValueError("story not found")
+        unique_ids = tuple(dict.fromkeys(related_story_ids))
+        if story_id in unique_ids:
+            raise ValueError("a story cannot relate to itself")
+        related: list[Story] = []
+        for related_id in unique_ids:
+            candidate = await self.get_story(related_id)
+            if (
+                candidate is None
+                or candidate.guild_id != story.guild_id
+                or candidate.state is StoryState.MERGED
+                or candidate.discord_thread_id is None
+            ):
+                raise ValueError("related story is not an eligible candidate")
+            related.append(candidate)
+        database = self._db()
+        now = utc_now().isoformat()
+        await database.execute("BEGIN IMMEDIATE")
+        try:
+            await database.execute(
+                """
+                UPDATE stories
+                SET analysis = ?, analysis_state = 'ready', analysis_error = NULL,
+                    analysis_updated_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (analysis, now, now, story_id),
+            )
+            for candidate in related:
+                low, high = sorted((story_id, candidate.id))
+                await database.execute(
+                    """
+                    INSERT OR IGNORE INTO story_relationships
+                        (story_id_low, story_id_high, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (low, high, now),
+                )
+            await self._insert_history(
+                story_id,
+                "analysis_ready",
+                detail={"related_story_ids": list(unique_ids)},
+            )
+            await database.commit()
+        except Exception:
+            await database.rollback()
+            raise
+
+    async def mark_story_analysis_failed(self, story_id: int, *, error: str) -> None:
+        database = self._db()
+        now = utc_now().isoformat()
+        await database.execute("BEGIN IMMEDIATE")
+        try:
+            await database.execute(
+                """
+                UPDATE stories
+                SET analysis_state = 'failed', analysis_error = ?,
+                    analysis_updated_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (error[:1000], now, now, story_id),
+            )
+            await self._insert_history(
+                story_id,
+                "analysis_failed",
+                detail={"error": error[:1000]},
+            )
+            await database.commit()
+        except Exception:
+            await database.rollback()
+            raise
+
+    async def related_stories(self, story_id: int) -> list[Story]:
+        cursor = await self._db().execute(
+            """
+            SELECT stories.*
+            FROM story_relationships
+            JOIN stories ON stories.id = CASE
+                WHEN story_relationships.story_id_low = ?
+                    THEN story_relationships.story_id_high
+                ELSE story_relationships.story_id_low
+            END
+            WHERE (
+                story_relationships.story_id_low = ?
+                OR story_relationships.story_id_high = ?
+            ) AND stories.state != 'merged'
+            ORDER BY stories.last_updated_at DESC, stories.id DESC
+            """,
+            (story_id, story_id, story_id),
+        )
+        return [_story_from_row(row) async for row in cursor]
 
     async def mark_story_published(self, story_id: int, *, thread_id: int, message_id: int) -> None:
         await self._db().execute(
@@ -1186,6 +1328,10 @@ def _story_from_row(row: aiosqlite.Row) -> Story:
         ),
         primary_article_id=(int(row["primary_article_id"]) if row["primary_article_id"] else None),
         primary_priority=int(row["primary_priority"]),
+        analysis=str(row["analysis"]) if row["analysis"] is not None else None,
+        analysis_state=AnalysisState(str(row["analysis_state"])),
+        analysis_error=(str(row["analysis_error"]) if row["analysis_error"] is not None else None),
+        analysis_updated_at=parse_time(row["analysis_updated_at"]),
     )
 
 

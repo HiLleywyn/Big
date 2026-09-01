@@ -65,6 +65,7 @@ class Settings:
     openrouter_model: str
     ai_web_search: bool
     ai_zdr: bool
+    related_story_limit: int
     database_path: Path
     guild_id: int | None
     poll_tick_seconds: int
@@ -95,6 +96,8 @@ class Settings:
             raise ConfigurationError("BIG_LOG_LEVEL is invalid")
         if not self.openrouter_model or len(self.openrouter_model) > 200:
             raise ConfigurationError("BIG_OPENROUTER_MODEL is invalid")
+        if not 0 <= self.related_story_limit <= 20:
+            raise ConfigurationError("BIG_RELATED_STORY_LIMIT must be between 0 and 20")
         if not 1024 <= self.health_port <= 65535:
             raise ConfigurationError("BIG_HEALTH_PORT must be between 1024 and 65535")
         clustering = self.app_config.clustering
@@ -294,6 +297,7 @@ def load_settings(*, require_discord: bool = False) -> Settings:
         openrouter_model=os.getenv("BIG_OPENROUTER_MODEL", "openrouter/auto").strip(),
         ai_web_search=_boolean("BIG_AI_WEB_SEARCH", "true"),
         ai_zdr=_boolean("BIG_AI_ZDR", "true"),
+        related_story_limit=_integer("BIG_RELATED_STORY_LIMIT", "8"),
         database_path=Path(os.getenv("BIG_DATABASE_PATH", "data/big.db")),
         guild_id=_integer("BIG_GUILD_ID", guild_raw) if guild_raw else None,
         poll_tick_seconds=_integer("BIG_POLL_TICK_SECONDS", "15"),

@@ -7,6 +7,7 @@ from bigbot.classification import StoryClassifier
 from bigbot.clustering import DeterministicClusterer
 from bigbot.database import Database
 from bigbot.domain import Article, Feed, FeedItem, FeedKind, FetchResult, PublishReceipt, Story
+from bigbot.enrichment import EnrichmentError, StoryAnalysis
 from bigbot.publisher import PublishError
 from bigbot.service import FeedService
 
@@ -30,11 +31,22 @@ class FakePublisher:
         self.merged = 0
         self.archived = 0
         self.deleted = 0
+        self.created_story_ids: list[int] = []
+        self.updated_story_ids: list[int] = []
+        self.related_by_story: dict[int, tuple[int, ...]] = {}
+        self.analysis_by_story: dict[int, str | None] = {}
 
     async def create_story(
-        self, feed: Feed, story: Story, articles: list[Article]
+        self,
+        feed: Feed,
+        story: Story,
+        articles: list[Article],
+        related_stories: list[Story],
     ) -> PublishReceipt:
         self.created += 1
+        self.created_story_ids.append(story.id)
+        self.related_by_story[story.id] = tuple(item.id for item in related_stories)
+        self.analysis_by_story[story.id] = story.analysis
         if self.uncertain:
             raise PublishError("unknown outcome", uncertain=True)
         return PublishReceipt(100 + self.created, 100 + self.created)
@@ -44,10 +56,14 @@ class FakePublisher:
         story: Story,
         articles: list[Article],
         article: Article,
+        related_stories: list[Story],
         *,
         post_update: bool,
     ) -> int | None:
         self.updated += 1
+        self.updated_story_ids.append(story.id)
+        self.related_by_story[story.id] = tuple(item.id for item in related_stories)
+        self.analysis_by_story[story.id] = story.analysis
         return 500 + self.updated if post_update else None
 
     async def mark_merged(self, source: Story, target: Story) -> None:
@@ -60,12 +76,47 @@ class FakePublisher:
         self.deleted += 1
 
 
-async def _feed(database: Database, name: str = "wire") -> Feed:
+class FakeAnalyzer:
+    def __init__(self, *, fail: bool = False, relate_first: bool = False) -> None:
+        self.fail = fail
+        self.relate_first = relate_first
+        self.calls: list[tuple[str, ...]] = []
+        self.closed = False
+
+    async def analyze_story(
+        self,
+        story: Story,
+        articles: list[Article],
+        relationship_candidates: list[Story],
+    ) -> StoryAnalysis:
+        self.calls.append(tuple(article.publisher for article in articles))
+        if self.fail:
+            raise EnrichmentError("OpenRouter unavailable")
+        related = (
+            (relationship_candidates[0].id,)
+            if self.relate_first and relationship_candidates
+            else ()
+        )
+        return StoryAnalysis(
+            text=(
+                "**Summary**\n"
+                f"Analysis from {len(articles)} sources.\n\n"
+                "**Key facts**\n"
+                "- Available reports describe the event."
+            ),
+            related_story_ids=related,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _feed(database: Database, name: str = "wire", *, kind: FeedKind = FeedKind.RSS) -> Feed:
     return await database.add_feed(
         guild_id=1,
         forum_channel_id=2,
         name=name,
-        kind=FeedKind.RSS,
+        kind=kind,
         source=f"https://example.com/{name}.rss",
         interval_seconds=300,
         tag_ids=(),
@@ -83,13 +134,18 @@ def _item(external_id: str, title: str, publisher: str, url: str) -> FeedItem:
 
 
 async def _service(
-    path: Path, publisher: FakePublisher, source: FakeSource
+    path: Path,
+    publisher: FakePublisher,
+    source: FakeSource,
+    *,
+    analyzer: FakeAnalyzer | None = None,
+    sources: dict[FeedKind, FakeSource] | None = None,
 ) -> tuple[Database, FeedService]:
     database = Database(path)
     await database.connect()
     service = FeedService(
         database=database,
-        sources={FeedKind.RSS: source},
+        sources=sources or {FeedKind.RSS: source},
         publisher=publisher,
         clusterer=DeterministicClusterer(),
         classifier=StoryClassifier.with_defaults(),
@@ -97,13 +153,17 @@ async def _service(
         max_backfill=2,
         clustering_window_hours=72,
         stale_after_hours=96,
+        analyzer=analyzer,
     )
     return database, service
 
 
 async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     publisher = FakePublisher()
-    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
     reuters = await _feed(database, "reuters")
     ap = await _feed(database, "ap")
     first = _item(
@@ -122,11 +182,17 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     assert await service.process_item(ap, second) == "updated_stories"
     assert publisher.created == 1
     assert publisher.updated == 1
+    assert analyzer.calls == [("Reuters",), ("Reuters", "AP")]
     stories = await database.candidate_stories(
         guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
     )
     assert len(stories) == 1
     assert len(await database.story_articles(stories[0].id)) == 2
+    stored = await database.get_story(stories[0].id)
+    assert stored is not None
+    assert stored.analysis is not None and "2 sources" in stored.analysis
+    assert publisher.updated_story_ids == [stored.id]
+    assert "2 sources" in (publisher.analysis_by_story[stored.id] or "")
     await database.close()
 
 
@@ -235,4 +301,93 @@ async def test_retention_archives_old_forum_stories_once(tmp_path) -> None:
     )
     row = await cursor.fetchone()
     assert row["clear_action"] == "archive"
+    await database.close()
+
+
+async def test_direct_story_relationships_are_reciprocal_in_discord(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(relate_first=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    first = _item(
+        "one",
+        "Central bank announces emergency lending program",
+        "Wire",
+        "https://news.example/lending",
+    )
+    second = _item(
+        "two",
+        "Treasury responds to emergency lending announcement",
+        "Wire",
+        "https://news.example/treasury-response",
+    )
+    assert await service.process_item(feed, first) == "new_stories"
+    assert await service.process_item(feed, second) == "new_stories"
+    assert publisher.created == 2
+    first_id, second_id = publisher.created_story_ids
+    assert publisher.related_by_story[second_id] == (first_id,)
+    assert publisher.related_by_story[first_id] == (second_id,)
+    assert [story.id for story in await database.related_stories(first_id)] == [second_id]
+    assert [story.id for story in await database.related_stories(second_id)] == [first_id]
+    await database.close()
+
+
+async def test_openrouter_failure_uses_same_finalizer_without_duplicate_post(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(fail=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item("one", "A confirmed event occurred", "Wire", "https://news.example/event")
+    assert await service.process_item(feed, item) == "new_stories"
+    story = (
+        await database.candidate_stories(
+            guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
+        )
+    )[0]
+    article = (await database.story_articles(story.id))[0]
+    assert story.analysis_state.value == "failed"
+    assert story.analysis_error == "OpenRouter unavailable"
+    assert publisher.created == 1
+    assert await service.reprocess_article(article.id) == "updated_stories"
+    assert publisher.created == 1
+    assert publisher.updated == 1
+    assert len(analyzer.calls) == 2
+    await database.close()
+
+
+async def test_rss_and_x_feeds_share_process_item_pipeline(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    rss_source = FakeSource(
+        (_item("rss-1", "Port authority changes cargo rules", "RSS Wire", "https://rss.example/1"),)
+    )
+    x_source = FakeSource(
+        (
+            _item(
+                "x-1",
+                "Space agency schedules a new launch",
+                "X Account",
+                "https://x.com/example/status/1",
+            ),
+        )
+    )
+    database, service = await _service(
+        tmp_path / "big.db",
+        publisher,
+        rss_source,
+        analyzer=analyzer,
+        sources={FeedKind.RSS: rss_source, FeedKind.X: x_source},
+    )
+    rss = await _feed(database, "rss", kind=FeedKind.RSS)
+    x_feed = await _feed(database, "x", kind=FeedKind.X)
+    assert (await service.poll_feed(rss.id)).new_stories == 1
+    assert (await service.poll_feed(x_feed.id)).new_stories == 1
+    assert analyzer.calls == [("RSS Wire",), ("X Account",)]
+    assert publisher.created == 2
+    await service.close()
+    assert analyzer.closed is True
     await database.close()

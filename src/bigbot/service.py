@@ -10,6 +10,7 @@ from bigbot.classification import StoryClassifier
 from bigbot.clustering import StoryClusterer
 from bigbot.database import Database
 from bigbot.domain import (
+    AnalysisState,
     Article,
     DeliveryState,
     Feed,
@@ -20,6 +21,7 @@ from bigbot.domain import (
     StoryState,
     utc_now,
 )
+from bigbot.enrichment import EnrichmentError, StoryAnalyzer
 from bigbot.feeds.base import FeedFetchError, FeedSource
 from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
@@ -61,6 +63,8 @@ class FeedService:
         retention_after_days: int | None = None,
         retention_action: str = "archive",
         retention_batch_size: int = 25,
+        analyzer: StoryAnalyzer | None = None,
+        related_story_limit: int = 8,
     ) -> None:
         self._database = database
         self._sources = sources
@@ -81,7 +85,10 @@ class FeedService:
         )
         self._retention_action = retention_action
         self._retention_batch_size = retention_batch_size
+        self._analyzer = analyzer
+        self._related_story_limit = related_story_limit
         self._feed_locks: dict[int, asyncio.Lock] = {}
+        self._story_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
         self._stopping = asyncio.Event()
 
@@ -144,8 +151,12 @@ class FeedService:
 
     async def close(self) -> None:
         self.stop()
-        for source in self._sources.values():
-            await source.close()
+        try:
+            for source in self._sources.values():
+                await source.close()
+        finally:
+            if self._analyzer is not None:
+                await self._analyzer.close()
 
     async def poll_feed(self, feed_id: int) -> PollReport:
         lock = self._feed_locks.setdefault(feed_id, asyncio.Lock())
@@ -240,71 +251,168 @@ class FeedService:
                     state=state,
                     priority=priority,
                 )
-                return await self._publish_new(feed, story, article)
-
-            old_story = decision.story
-            if old_story.state is StoryState.BREAKING:
-                state = StoryState.BREAKING
-            elif decision.significant_update:
-                state = StoryState.DEVELOPING
+                significant = True
             else:
-                state = StoryState.UPDATED
-            story, article = await self._database.attach_article(
-                story=old_story,
-                feed=feed,
-                item=item,
-                normalized=normalized,
-                tags=tags,
-                state=state,
-                priority=priority,
-                significant=decision.significant_update,
-            )
-            log.info(
-                "article clustered",
-                extra={
-                    "event": "article_clustered",
-                    "feed_id": feed.id,
-                    "story_id": story.id,
-                    "article_id": article.id,
-                    "cluster_score": round(decision.score, 4),
-                },
-            )
-            return await self._publish_update(story, article, decision.significant_update)
+                old_story = decision.story
+                if old_story.state is StoryState.BREAKING:
+                    state = StoryState.BREAKING
+                elif decision.significant_update:
+                    state = StoryState.DEVELOPING
+                else:
+                    state = StoryState.UPDATED
+                story, article = await self._database.attach_article(
+                    story=old_story,
+                    feed=feed,
+                    item=item,
+                    normalized=normalized,
+                    tags=tags,
+                    state=state,
+                    priority=priority,
+                    significant=decision.significant_update,
+                )
+                significant = decision.significant_update
+                log.info(
+                    "article clustered",
+                    extra={
+                        "event": "article_clustered",
+                        "feed_id": feed.id,
+                        "story_id": story.id,
+                        "article_id": article.id,
+                        "cluster_score": round(decision.score, 4),
+                    },
+                )
 
-    async def _publish_new(self, feed: Feed, story: Story, article: Article) -> str:
+        lock = self._story_locks.setdefault(story.id, asyncio.Lock())
+        async with lock:
+            return await self._finalize_story(
+                feed=feed,
+                story=story,
+                article=article,
+                significant=significant,
+            )
+
+    async def _finalize_story(
+        self,
+        *,
+        feed: Feed,
+        story: Story,
+        article: Article,
+        significant: bool,
+        allow_update_message: bool = True,
+    ) -> str:
+        articles = await self._database.story_articles(story.id)
+        if self._analyzer is not None:
+            candidates = await self._database.relationship_candidates(
+                story,
+                since=utc_now() - self._window,
+                limit=self._related_story_limit,
+            )
+            try:
+                result = await self._analyzer.analyze_story(story, articles, candidates)
+                await self._database.save_story_analysis(
+                    story.id,
+                    analysis=result.text,
+                    related_story_ids=result.related_story_ids,
+                )
+                log.info(
+                    "story analysis updated",
+                    extra={
+                        "event": "story_analysis_ready",
+                        "story_id": story.id,
+                        "source_count": len(articles),
+                        "related_count": len(result.related_story_ids),
+                    },
+                )
+            except (EnrichmentError, ValueError) as exc:
+                await self._database.mark_story_analysis_failed(story.id, error=str(exc))
+                log.warning(
+                    "story analysis failed",
+                    extra={
+                        "event": "story_analysis_failed",
+                        "story_id": story.id,
+                        "source_count": len(articles),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        current = await self._database.get_story(story.id)
+        if current is None:
+            raise RuntimeError("story disappeared during finalization")
+        related = await self._database.related_stories(current.id)
+        creating = current.discord_thread_id is None
         try:
-            receipt = await self._publisher.create_story(feed, story, [article])
+            if creating:
+                receipt = await self._publisher.create_story(feed, current, articles, related)
+                await self._database.mark_story_published(
+                    current.id,
+                    thread_id=receipt.thread_id,
+                    message_id=receipt.message_id,
+                )
+                message_id = None
+            else:
+                post_update = allow_update_message and (
+                    self._post_source_updates or (significant and self._post_major_updates)
+                )
+                message_id = await self._publisher.update_story(
+                    current,
+                    articles,
+                    article,
+                    related,
+                    post_update=post_update,
+                )
         except PublishError as exc:
-            state = PublicationState.UNCERTAIN if exc.uncertain else PublicationState.FAILED
             delivery = DeliveryState.UNCERTAIN if exc.uncertain else DeliveryState.FAILED
-            await self._database.mark_story_publication(story.id, state)
+            if creating:
+                publication = (
+                    PublicationState.UNCERTAIN if exc.uncertain else PublicationState.FAILED
+                )
+                await self._database.mark_story_publication(current.id, publication)
             await self._database.mark_article_delivery(article.id, delivery, error=str(exc))
             return "uncertain" if exc.uncertain else "failed"
-        await self._database.mark_story_published(
-            story.id, thread_id=receipt.thread_id, message_id=receipt.message_id
-        )
-        await self._database.mark_article_delivery(article.id, DeliveryState.POSTED)
-        log.info(
-            "new story published",
-            extra={"event": "story_created", "story_id": story.id, "article_id": article.id},
-        )
-        return "new_stories"
-
-    async def _publish_update(self, story: Story, article: Article, significant: bool) -> str:
-        articles = await self._database.story_articles(story.id)
-        post_update = self._post_source_updates or (significant and self._post_major_updates)
-        try:
-            message_id = await self._publisher.update_story(
-                story, articles, article, post_update=post_update
-            )
-        except PublishError as exc:
-            state = DeliveryState.UNCERTAIN if exc.uncertain else DeliveryState.FAILED
-            await self._database.mark_article_delivery(article.id, state, error=str(exc))
-            return "uncertain" if exc.uncertain else "failed"
         await self._database.mark_article_delivery(
-            article.id, DeliveryState.POSTED, update_message_id=message_id
+            article.id,
+            DeliveryState.POSTED,
+            update_message_id=message_id,
         )
+        published = await self._database.get_story(current.id)
+        if published is not None:
+            await self._refresh_related_story_posts(published)
+        if creating:
+            log.info(
+                "new story published",
+                extra={
+                    "event": "story_created",
+                    "story_id": current.id,
+                    "article_id": article.id,
+                },
+            )
+            return "new_stories"
         return "updated_stories"
+
+    async def _refresh_related_story_posts(self, story: Story) -> None:
+        for related in await self._database.related_stories(story.id):
+            if related.discord_thread_id is None:
+                continue
+            articles = await self._database.story_articles(related.id)
+            if not articles:
+                continue
+            reciprocal = await self._database.related_stories(related.id)
+            try:
+                await self._publisher.update_story(
+                    related,
+                    articles,
+                    articles[-1],
+                    reciprocal,
+                    post_update=False,
+                )
+            except PublishError:
+                log.exception(
+                    "related story backlink update failed",
+                    extra={
+                        "event": "related_story_update_failed",
+                        "story_id": related.id,
+                        "related_story_id": story.id,
+                    },
+                )
 
     async def _duplicate(
         self, feed: Feed, item: FeedItem, normalized: NormalizedArticle
@@ -326,9 +434,21 @@ class FeedService:
         target, source = await self._database.merge_stories(target_id, source_id, actor_id=actor_id)
         articles = await self._database.story_articles(target.id)
         if articles:
-            await self._publisher.update_story(target, articles, articles[-1], post_update=False)
+            article = articles[-1]
+            if article.feed_id is None:
+                raise ValueError("article feed no longer exists")
+            feed = await self._database.get_feed(article.feed_id)
+            if feed is None:
+                raise ValueError("article feed no longer exists")
+            await self._finalize_story(
+                feed=feed,
+                story=target,
+                article=article,
+                significant=True,
+                allow_update_message=False,
+            )
         await self._publisher.mark_merged(source, target)
-        return target
+        return (await self._database.get_story(target.id)) or target
 
     async def split_article(self, article_id: int, *, actor_id: int) -> Story:
         original, story, article = await self._database.split_article(article_id, actor_id=actor_id)
@@ -338,17 +458,27 @@ class FeedService:
         if feed is None:
             raise ValueError("article feed no longer exists")
         await self._database.mark_article_delivery(article.id, DeliveryState.PENDING)
-        receipt = await self._publisher.create_story(feed, story, [article])
-        await self._database.mark_story_published(
-            story.id, thread_id=receipt.thread_id, message_id=receipt.message_id
+        await self._finalize_story(
+            feed=feed,
+            story=story,
+            article=article,
+            significant=True,
+            allow_update_message=False,
         )
-        await self._database.mark_article_delivery(article.id, DeliveryState.POSTED)
         remaining = await self._database.story_articles(original.id)
         if remaining and original.discord_thread_id:
-            await self._publisher.update_story(
-                original, remaining, remaining[-1], post_update=False
-            )
-        return story
+            remaining_article = remaining[-1]
+            if remaining_article.feed_id is not None:
+                remaining_feed = await self._database.get_feed(remaining_article.feed_id)
+                if remaining_feed is not None:
+                    await self._finalize_story(
+                        feed=remaining_feed,
+                        story=original,
+                        article=remaining_article,
+                        significant=True,
+                        allow_update_message=False,
+                    )
+        return (await self._database.get_story(story.id)) or story
 
     async def reprocess_article(self, article_id: int) -> str:
         article = await self._database.get_article(article_id)
@@ -356,16 +486,25 @@ class FeedService:
             raise ValueError("article not found or not clustered")
         if article.delivery_state is DeliveryState.UNCERTAIN:
             raise ValueError("uncertain Discord writes cannot be retried automatically")
-        if article.delivery_state is not DeliveryState.FAILED:
-            raise ValueError("only confirmed failed articles can be reprocessed")
         story = await self._database.get_story(article.story_id)
         if story is None:
             raise ValueError("story not found")
-        if story.publication_state is PublicationState.FAILED:
-            if article.feed_id is None:
-                raise ValueError("article feed no longer exists")
-            feed = await self._database.get_feed(article.feed_id)
-            if feed is None:
-                raise ValueError("article feed no longer exists")
-            return await self._publish_new(feed, story, article)
-        return await self._publish_update(story, article, significant=True)
+        if (
+            article.delivery_state is not DeliveryState.FAILED
+            and story.analysis_state is not AnalysisState.FAILED
+        ):
+            raise ValueError("only confirmed delivery or analysis failures can be reprocessed")
+        if article.feed_id is None:
+            raise ValueError("article feed no longer exists")
+        feed = await self._database.get_feed(article.feed_id)
+        if feed is None:
+            raise ValueError("article feed no longer exists")
+        lock = self._story_locks.setdefault(story.id, asyncio.Lock())
+        async with lock:
+            return await self._finalize_story(
+                feed=feed,
+                story=story,
+                article=article,
+                significant=True,
+                allow_update_message=False,
+            )

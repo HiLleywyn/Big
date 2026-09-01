@@ -53,6 +53,12 @@ class PublicationState(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+class AnalysisState(StrEnum):
+    DISABLED = "disabled"
+    READY = "ready"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class Feed:
     id: int
@@ -144,6 +150,10 @@ class Story:
     merged_into_story_id: int | None = None
     primary_article_id: int | None = None
     primary_priority: int = 0
+    analysis: str | None = None
+    analysis_state: AnalysisState = AnalysisState.DISABLED
+    analysis_error: str | None = None
+    analysis_updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)

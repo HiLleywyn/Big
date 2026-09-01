@@ -5,7 +5,7 @@ from typing import Protocol
 
 import discord
 
-from bigbot.domain import Article, Feed, PublishReceipt, Story
+from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story
 from bigbot.security import forum_title, neutralize_mentions, plain_text, safe_external_link
 
 log = logging.getLogger(__name__)
@@ -19,7 +19,11 @@ class PublishError(RuntimeError):
 
 class ForumPublisher(Protocol):
     async def create_story(
-        self, feed: Feed, story: Story, articles: list[Article]
+        self,
+        feed: Feed,
+        story: Story,
+        articles: list[Article],
+        related_stories: list[Story],
     ) -> PublishReceipt: ...
 
     async def update_story(
@@ -27,6 +31,7 @@ class ForumPublisher(Protocol):
         story: Story,
         articles: list[Article],
         article: Article,
+        related_stories: list[Story],
         *,
         post_update: bool,
     ) -> int | None: ...
@@ -43,7 +48,11 @@ class DiscordForumPublisher:
         self._client = client
 
     async def create_story(
-        self, feed: Feed, story: Story, articles: list[Article]
+        self,
+        feed: Feed,
+        story: Story,
+        articles: list[Article],
+        related_stories: list[Story],
     ) -> PublishReceipt:
         channel = await self._forum(feed.forum_channel_id, feed.guild_id)
         tags = self._resolve_tags(channel, story.tags, feed.tag_ids)
@@ -51,7 +60,7 @@ class DiscordForumPublisher:
             result = await channel.create_thread(
                 name=forum_title(story.title),
                 content=neutralize_mentions(_starter_content(story)),
-                embed=_story_embed(story, articles),
+                embed=_story_embed(story, articles, related_stories),
                 applied_tags=tags,
                 auto_archive_duration=1440,
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -66,6 +75,7 @@ class DiscordForumPublisher:
         story: Story,
         articles: list[Article],
         article: Article,
+        related_stories: list[Story],
         *,
         post_update: bool,
     ) -> int | None:
@@ -83,7 +93,7 @@ class DiscordForumPublisher:
             starter = await thread.fetch_message(story.discord_starter_message_id)
             await starter.edit(
                 content=neutralize_mentions(_starter_content(story)),
-                embed=_story_embed(story, articles),
+                embed=_story_embed(story, articles, related_stories),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             if not post_update:
@@ -186,7 +196,11 @@ class DryRunForumPublisher:
         self._next_id = 10_000
 
     async def create_story(
-        self, feed: Feed, story: Story, articles: list[Article]
+        self,
+        feed: Feed,
+        story: Story,
+        articles: list[Article],
+        related_stories: list[Story],
     ) -> PublishReceipt:
         self._next_id += 1
         log.info(
@@ -200,6 +214,7 @@ class DryRunForumPublisher:
         story: Story,
         articles: list[Article],
         article: Article,
+        related_stories: list[Story],
         *,
         post_update: bool,
     ) -> int | None:
@@ -233,14 +248,16 @@ def _starter_content(story: Story) -> str:
     return f"**{story.state.value.upper()}**  |  Story `{story.id}`"
 
 
-def _story_embed(story: Story, articles: list[Article]) -> discord.Embed:
+def _story_embed(
+    story: Story, articles: list[Article], related_stories: list[Story]
+) -> discord.Embed:
     primary = next(
         (article for article in articles if article.id == story.primary_article_id),
         articles[0] if articles else None,
     )
     embed = discord.Embed(
         title=plain_text(story.title, limit=256),
-        description=plain_text(story.summary, limit=3000),
+        description=_story_description(story),
         color=_state_color(story),
         timestamp=story.last_updated_at,
     )
@@ -264,8 +281,26 @@ def _story_embed(story: Story, articles: list[Article]) -> discord.Embed:
     embed.add_field(
         name=f"Sources ({len(articles)})", value="\n".join(sources) or "None", inline=False
     )
+    related = []
+    for candidate in related_stories:
+        if candidate.discord_thread_id is None:
+            continue
+        url = f"https://discord.com/channels/{candidate.guild_id}/{candidate.discord_thread_id}"
+        related.append(f"- [{plain_text(candidate.title, limit=100)}]({url})")
+    if related:
+        embed.add_field(
+            name="Related stories",
+            value="\n".join(related)[:1024],
+            inline=False,
+        )
     embed.set_footer(text=f"Last updated | {_discord_time(story.last_updated_at)}")
     return embed
+
+
+def _story_description(story: Story) -> str:
+    if story.analysis_state is AnalysisState.READY and story.analysis:
+        return neutralize_mentions(story.analysis)[:3000].rstrip()
+    return plain_text(story.summary, limit=3000)
 
 
 def _update_embed(article: Article) -> discord.Embed:

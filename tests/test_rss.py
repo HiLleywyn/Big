@@ -20,6 +20,18 @@ RSS = b"""<?xml version="1.0"?>
 <pubDate>Tue, 25 Aug 2026 11:00:00 GMT</pubDate></item>
 </channel></rss>"""
 
+ATOM = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Wire</title>
+  <entry>
+    <id>atom-1</id>
+    <title>Atom topic</title>
+    <link href="https://example.com/atom-1" />
+    <summary>Atom summary.</summary>
+    <updated>2026-08-25T12:00:00Z</updated>
+  </entry>
+</feed>"""
+
 
 def test_parse_rss_preserves_order_and_identity() -> None:
     items = parse_rss_bytes(RSS)
@@ -27,6 +39,14 @@ def test_parse_rss_preserves_order_and_identity() -> None:
     assert items[0].author == "Debate Wire"
     assert items[0].published_at == datetime(2026, 8, 25, 10, tzinfo=UTC)
     assert items[1].url == ""
+
+
+def test_atom_uses_the_shared_rss_adapter() -> None:
+    items = parse_rss_bytes(ATOM)
+    assert len(items) == 1
+    assert items[0].external_id == "atom-1"
+    assert items[0].publisher == "Atom Wire"
+    assert items[0].url == "https://example.com/atom-1"
 
 
 def test_invalid_rss_fails_closed() -> None:
