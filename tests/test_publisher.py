@@ -40,3 +40,6 @@ def test_story_embed_renders_analysis_and_related_thread_link() -> None:
     related_field = next(field for field in embed["fields"] if field["name"] == "Related stories")
     assert "https://discord.com/channels/1/202" in related_field["value"]
     assert "Directly related story" in related_field["value"]
+    assert embed["footer"]["text"] == "Last updated"
+    assert "<t:" not in embed["footer"]["text"]
+    assert embed["timestamp"] == current.last_updated_at.isoformat()

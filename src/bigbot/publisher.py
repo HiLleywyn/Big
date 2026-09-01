@@ -293,7 +293,7 @@ def _story_embed(
             value="\n".join(related)[:1024],
             inline=False,
         )
-    embed.set_footer(text=f"Last updated | {_discord_time(story.last_updated_at)}")
+    embed.set_footer(text="Last updated")
     return embed
 
 
