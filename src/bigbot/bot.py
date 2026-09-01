@@ -71,6 +71,7 @@ class BigBot(commands.Bot):
         self.database = Database(settings.database_path)
         self._scheduler: asyncio.Task[None] | None = None
         self._health: HealthServer | None = None
+        self._command_sync_pending = False
 
     async def setup_hook(self) -> None:
         await self.database.connect()
@@ -123,7 +124,17 @@ class BigBot(commands.Bot):
         if sync_guild:
             guild = discord.Object(id=sync_guild)
             self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
+            try:
+                await self.tree.sync(guild=guild)
+            except discord.Forbidden as exc:
+                if exc.code != 50001:
+                    raise
+                self._command_sync_pending = True
+                log.warning(
+                    "Big cannot access configured guild %s yet; invite the bot to continue",
+                    sync_guild,
+                    extra={"event": "guild_access_pending", "guild_id": sync_guild},
+                )
         else:
             await self.tree.sync()
 
@@ -152,6 +163,19 @@ class BigBot(commands.Bot):
         log.info("Big is ready", extra={"event": "ready"})
         if self.user:
             log.info("Invite Big with %s", invite_url(self.user.id), extra={"event": "invite"})
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        sync_guild = self.settings.guild_id or self.settings.app_config.guild_id
+        if not self._command_sync_pending or guild.id != sync_guild:
+            return
+        target = discord.Object(id=guild.id)
+        self.tree.copy_global_to(guild=target)
+        await self.tree.sync(guild=target)
+        self._command_sync_pending = False
+        log.info(
+            "Big commands synced after joining configured guild",
+            extra={"event": "guild_commands_synced", "guild_id": guild.id},
+        )
 
 
 class NewsCommands(app_commands.Group):
@@ -617,7 +641,13 @@ class ForumChannelSelect(discord.ui.ChannelSelect[AddFeedForumView]):
         parent = self.view
         if parent is None:
             return
-        channel = self.values[0]
+        selected = self.values[0]
+        channel = parent.bot.get_channel(selected.id)
+        if channel is None and interaction.guild is not None:
+            try:
+                channel = await interaction.guild.fetch_channel(selected.id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                channel = None
         if not isinstance(channel, discord.ForumChannel):
             await _send_notice(interaction, "Add Feed", ("Select a Forum Channel.",))
             return
