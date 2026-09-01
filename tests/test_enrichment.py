@@ -56,7 +56,7 @@ async def test_enrichment_requires_and_renders_citations() -> None:
         client=client,
     )
     result = await enricher.enrich(item())
-    assert "AI briefing" in result.text
+    assert "Briefing" in result.text
     assert "https://example.com/original" in result.text
     assert "https://data.example.org/report" in result.text
     assert len(result.text) <= 2000

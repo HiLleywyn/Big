@@ -162,7 +162,20 @@ FEED_PUBLISHER_SCHEMA = """
 ALTER TABLE feeds ADD COLUMN publisher TEXT NOT NULL DEFAULT '';
 """
 
-MIGRATIONS = ((1, SCHEMA), (2, STORY_SCHEMA), (3, FEED_PUBLISHER_SCHEMA))
+CLEAR_STORIES_SCHEMA = """
+ALTER TABLE stories ADD COLUMN cleared_at TEXT;
+ALTER TABLE stories ADD COLUMN clear_action TEXT;
+
+CREATE INDEX idx_stories_cleanup
+    ON stories (cleared_at, last_updated_at, state);
+"""
+
+MIGRATIONS = (
+    (1, SCHEMA),
+    (2, STORY_SCHEMA),
+    (3, FEED_PUBLISHER_SCHEMA),
+    (4, CLEAR_STORIES_SCHEMA),
+)
 
 
 class DuplicateFeedError(ValueError):
@@ -700,6 +713,42 @@ class Database:
         )
         await self._db().commit()
         return cursor.rowcount
+
+    async def stories_for_cleanup(self, *, before: datetime, limit: int) -> list[Story]:
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE cleared_at IS NULL
+              AND discord_thread_id IS NOT NULL
+              AND state != 'merged'
+              AND last_updated_at < ?
+            ORDER BY last_updated_at, id
+            LIMIT ?
+            """,
+            (before.isoformat(), limit),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def mark_story_cleared(self, story_id: int, *, action: str) -> None:
+        if action not in {"archive", "delete"}:
+            raise ValueError("cleanup action must be archive or delete")
+        database = self._db()
+        now = utc_now().isoformat()
+        await database.execute("BEGIN IMMEDIATE")
+        try:
+            await database.execute(
+                """
+                UPDATE stories
+                SET cleared_at = ?, clear_action = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, action, now, story_id),
+            )
+            await self._insert_history(story_id, f"cleanup_{action}")
+            await database.commit()
+        except Exception:
+            await database.rollback()
+            raise
 
     async def story_counts(self, guild_id: int | None = None) -> dict[str, int]:
         if guild_id is None:

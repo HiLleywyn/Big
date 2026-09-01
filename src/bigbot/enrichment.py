@@ -146,9 +146,9 @@ def _render_briefing(content: str, sources: tuple[str, ...], original: str) -> s
     for index, url in enumerate(sources, start=1):
         host = urlparse(url).hostname or f"source-{index}"
         links.append(f"[{host}]({url})")
-    source_line = " · ".join(dict.fromkeys(links))
+    source_line = " | ".join(dict.fromkeys(links))
     suffix = f"\n\n**Sources consulted:** {source_line}" if source_line else ""
-    prefix = "**AI briefing — verify cited sources**\n"
+    prefix = "**Briefing | verify cited sources**\n"
     budget = max(200, 2000 - len(prefix) - len(suffix))
     briefing = neutralize_mentions(content.strip())[:budget].rstrip()
     return f"{prefix}{briefing}{suffix}"[:2000]

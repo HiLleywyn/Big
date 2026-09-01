@@ -33,6 +33,10 @@ class ForumPublisher(Protocol):
 
     async def mark_merged(self, source: Story, target: Story) -> None: ...
 
+    async def archive_story(self, story: Story) -> None: ...
+
+    async def delete_story(self, story: Story) -> None: ...
+
 
 class DiscordForumPublisher:
     def __init__(self, client: discord.Client) -> None:
@@ -109,6 +113,29 @@ class DiscordForumPublisher:
             )
         except discord.HTTPException as exc:
             raise _publish_error("mark merged story", exc) from exc
+
+    async def archive_story(self, story: Story) -> None:
+        if story.discord_thread_id is None:
+            return
+        try:
+            thread = await self._thread(story.discord_thread_id)
+            if not thread.archived:
+                await thread.edit(archived=True, reason=f"Big retention story {story.id}")
+        except discord.NotFound:
+            return
+        except discord.HTTPException as exc:
+            raise _publish_error("archive old forum story", exc) from exc
+
+    async def delete_story(self, story: Story) -> None:
+        if story.discord_thread_id is None:
+            return
+        try:
+            thread = await self._thread(story.discord_thread_id)
+            await thread.delete(reason=f"Big retention story {story.id}")
+        except discord.NotFound:
+            return
+        except discord.HTTPException as exc:
+            raise _publish_error("delete old forum story", exc) from exc
 
     async def _forum(self, channel_id: int, guild_id: int) -> discord.ForumChannel:
         channel = self._client.get_channel(channel_id)
@@ -189,6 +216,18 @@ class DryRunForumPublisher:
             extra={"event": "dry_run_merge", "story_id": target.id},
         )
 
+    async def archive_story(self, story: Story) -> None:
+        log.info(
+            "dry-run story archived",
+            extra={"event": "dry_run_archive", "story_id": story.id},
+        )
+
+    async def delete_story(self, story: Story) -> None:
+        log.info(
+            "dry-run story deleted",
+            extra={"event": "dry_run_delete", "story_id": story.id},
+        )
+
 
 def _starter_content(story: Story) -> str:
     return f"**{story.state.value.upper()}**  |  Story `{story.id}`"
@@ -219,9 +258,9 @@ def _story_embed(story: Story, articles: list[Article]) -> discord.Embed:
     for article in articles[:12]:
         url = safe_external_link(article.url)
         if url:
-            sources.append(f"• [{plain_text(article.publisher, limit=80)}]({url})")
+            sources.append(f"- [{plain_text(article.publisher, limit=80)}]({url})")
     if len(articles) > 12:
-        sources.append(f"• {len(articles) - 12} more sources")
+        sources.append(f"- {len(articles) - 12} more sources")
     embed.add_field(
         name=f"Sources ({len(articles)})", value="\n".join(sources) or "None", inline=False
     )

@@ -59,6 +59,37 @@ feeds:
     assert config.feeds[0].default_tags == ("World",)
 
 
+def test_yaml_retention_configuration(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+retention:
+  clear_after_days: 14
+  action: delete
+  batch_size: 10
+""",
+        encoding="utf-8",
+    )
+    config = load_app_config(path)
+    assert config.retention.clear_after_days == 14
+    assert config.retention.action == "delete"
+    assert config.retention.batch_size == 10
+
+
+def test_yaml_rejects_invalid_retention_action(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+retention:
+  clear_after_days: 14
+  action: vaporize
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match=r"retention\.action"):
+        load_app_config(path)
+
+
 def test_yaml_rejects_string_boolean(tmp_path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(

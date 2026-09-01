@@ -72,6 +72,18 @@ as a user.
 
 Secrets belong in `.env`. Feed and clustering policy belongs in `config.yaml`.
 
+Environment variables:
+
+```text
+DISCORD_TOKEN       Required for a real Discord run
+BIG_DRY_RUN         true for local dry-run, false for Discord posting
+BIG_CONFIG_PATH     Path to config.yaml, default config.yaml
+BIG_GUILD_ID        Optional dev guild for fast slash-command sync
+BIG_DATABASE_PATH   SQLite path, default data/big.db
+BIG_HEALTH_PORT     Local health port, default 8787
+X_BEARER_TOKEN      Only required for official X feeds
+```
+
 ```yaml
 guild_id: 123456789012345678
 forum_channel_id: 123456789012345678
@@ -85,6 +97,11 @@ clustering:
 update_behavior:
   post_major_updates: true
   post_source_updates: false
+
+retention:
+  clear_after_days:
+  action: archive
+  batch_size: 25
 
 source_priorities:
   Reuters: 100
@@ -103,6 +120,10 @@ before sending anything. A required-tag forum fails safely when no configured ta
 
 The first successful poll is capped by `BIG_MAX_BACKFILL` so enabling a feed cannot flood a
 forum. Older entries are recorded as skipped and remain deduplicated after restarts.
+
+Retention is off until `retention.clear_after_days` is set. `archive` closes old forum threads
+while keeping discussion history. `delete` removes the forum thread and should only be used when
+that is the server policy. Cleanup runs in bounded batches.
 
 ## Story clustering
 
@@ -131,18 +152,24 @@ Members need Manage Server to change feeds or clusters.
 ```text
 /news status
 /news feeds
-/news add-feed name url forum [interval_minutes] [default_tags]
-/news remove-feed feed_id
-/news refresh [feed_id]
-/news story story_id
-/news merge target_story_id source_story_id
-/news split article_id
-/news reprocess article_id
+/news add-feed
+/news remove-feed
+/news refresh
+/news story
+/news merge
+/news split
+/news reprocess
 ```
 
-`merge` moves the source cluster into the target and archives the old Discord thread. `split`
-moves one article into a fresh story and forum post. `reprocess` only retries a confirmed failed
-write. It refuses uncertain writes because blindly replaying one could create duplicates.
+Feed management uses Discord Components v2 with panels, forum channel selects, buttons, and
+organized forms. `add-feed` first asks for a Forum Channel, then opens a form for name, publisher,
+RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection panel with a confirm
+step. `refresh` lets moderators refresh one feed or all feeds from the panel.
+
+Story tools use short forms for IDs. `merge` moves the source cluster into the target and archives
+the old Discord thread. `split` moves one article into a fresh story and forum post. `reprocess`
+only retries a confirmed failed write. It refuses uncertain writes because blindly replaying one
+could create duplicates.
 
 ## Run locally
 

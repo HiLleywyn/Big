@@ -75,6 +75,9 @@ async def _dry_run(settings: Settings) -> None:
         source_priorities=config.source_priorities,
         post_major_updates=config.updates.post_major_updates,
         post_source_updates=config.updates.post_source_updates,
+        retention_after_days=config.retention.clear_after_days,
+        retention_action=config.retention.action,
+        retention_batch_size=config.retention.batch_size,
     )
 
     async def status() -> dict[str, object]:

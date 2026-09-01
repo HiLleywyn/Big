@@ -12,6 +12,13 @@ update_behavior:
   post_major_updates: true
   post_source_updates: false
 
+retention:
+  # Off by default. Set to a positive number to clear old forum threads.
+  clear_after_days:
+  # archive keeps the thread history. delete removes the forum thread.
+  action: archive
+  batch_size: 25
+
 tag_mappings:
   Politics: [election, government, president, senate, vote]
   World: [diplomat, international, nation, war]

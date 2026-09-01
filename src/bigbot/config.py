@@ -38,12 +38,20 @@ class UpdateOptions:
 
 
 @dataclass(frozen=True)
+class RetentionOptions:
+    clear_after_days: int | None = None
+    action: str = "archive"
+    batch_size: int = 25
+
+
+@dataclass(frozen=True)
 class AppConfig:
     guild_id: int | None = None
     forum_channel_id: int | None = None
     polling_interval_seconds: int = 900
     clustering: ClusteringOptions = ClusteringOptions()
     updates: UpdateOptions = UpdateOptions()
+    retention: RetentionOptions = RetentionOptions()
     tag_mappings: dict[str, tuple[str, ...]] | None = None
     source_priorities: dict[str, int] | None = None
     feeds: tuple[FeedSpec, ...] = ()
@@ -96,6 +104,13 @@ class Settings:
             raise ConfigurationError("clustering.window_hours must be between 1 and 720")
         if not 1 <= clustering.stale_after_hours <= 8760:
             raise ConfigurationError("clustering.stale_after_hours must be between 1 and 8760")
+        retention = self.app_config.retention
+        if retention.clear_after_days is not None and not 1 <= retention.clear_after_days <= 3650:
+            raise ConfigurationError("retention.clear_after_days must be between 1 and 3650")
+        if retention.action not in {"archive", "delete"}:
+            raise ConfigurationError("retention.action must be archive or delete")
+        if not 1 <= retention.batch_size <= 100:
+            raise ConfigurationError("retention.batch_size must be between 1 and 100")
         for feed in self.app_config.feeds:
             if not 300 <= feed.interval_seconds <= 86400:
                 raise ConfigurationError(
@@ -131,6 +146,7 @@ def load_app_config(path: Path) -> AppConfig:
         raise ConfigurationError("YAML config root must be a mapping")
     clustering_raw = _mapping(raw.get("clustering"), "clustering")
     updates_raw = _mapping(raw.get("update_behavior"), "update_behavior")
+    retention_raw = _mapping(raw.get("retention"), "retention")
     default_interval = _positive_int(
         raw.get("polling_interval_seconds", 900), "polling_interval_seconds"
     )
@@ -194,6 +210,17 @@ def load_app_config(path: Path) -> AppConfig:
                 "update_behavior.post_source_updates",
             ),
         ),
+        retention=RetentionOptions(
+            clear_after_days=_optional_positive_int(
+                retention_raw.get("clear_after_days"),
+                "retention.clear_after_days",
+            ),
+            action=_retention_action(retention_raw.get("action", "archive")),
+            batch_size=_positive_int(
+                retention_raw.get("batch_size", 25),
+                "retention.batch_size",
+            ),
+        ),
         tag_mappings=tag_mappings,
         source_priorities=priorities,
         feeds=tuple(feeds),
@@ -242,6 +269,13 @@ def _yaml_boolean(value: object, name: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ConfigurationError(f"{name} must be true or false")
+
+
+def _retention_action(value: object) -> str:
+    action = str(value or "").strip().lower()
+    if action not in {"archive", "delete"}:
+        raise ConfigurationError("retention.action must be archive or delete")
+    return action
 
 
 def _optional_positive_int(value: object, name: str) -> int | None:

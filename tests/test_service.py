@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from bigbot.classification import StoryClassifier
@@ -28,6 +28,8 @@ class FakePublisher:
         self.created = 0
         self.updated = 0
         self.merged = 0
+        self.archived = 0
+        self.deleted = 0
 
     async def create_story(
         self, feed: Feed, story: Story, articles: list[Article]
@@ -50,6 +52,12 @@ class FakePublisher:
 
     async def mark_merged(self, source: Story, target: Story) -> None:
         self.merged += 1
+
+    async def archive_story(self, story: Story) -> None:
+        self.archived += 1
+
+    async def delete_story(self, story: Story) -> None:
+        self.deleted += 1
 
 
 async def _feed(database: Database, name: str = "wire") -> Feed:
@@ -188,4 +196,43 @@ async def test_moderator_can_merge_then_split_story_sources(tmp_path) -> None:
     assert split.id not in {target.id, source.id}
     assert len(await database.story_articles(split.id)) == 1
     assert len(await database.story_articles(target.id)) == 1
+    await database.close()
+
+
+async def test_retention_archives_old_forum_stories_once(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    service._retention_after = timedelta(days=1)
+    service._retention_action = "archive"
+    feed = await _feed(database)
+    old_item = FeedItem(
+        "old",
+        "Old market story",
+        "https://news.example/old",
+        "Old market story",
+        "Wire",
+        datetime.now(UTC) - timedelta(days=3),
+    )
+    assert await service.process_item(feed, old_item) == "new_stories"
+    story = (
+        await database.candidate_stories(
+            guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
+        )
+    )[0]
+    old_timestamp = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    await database._db().execute(
+        "UPDATE stories SET last_updated_at = ?, updated_at = ? WHERE id = ?",
+        (old_timestamp, old_timestamp, story.id),
+    )
+    await database._db().commit()
+    assert await service.cleanup_old_stories() == 1
+    assert await service.cleanup_old_stories() == 0
+    assert publisher.archived == 1
+    assert publisher.deleted == 0
+    cursor = await database._db().execute(
+        "SELECT clear_action FROM stories WHERE id = ?",
+        (story.id,),
+    )
+    row = await cursor.fetchone()
+    assert row["clear_action"] == "archive"
     await database.close()

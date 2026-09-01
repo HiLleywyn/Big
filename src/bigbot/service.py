@@ -58,6 +58,9 @@ class FeedService:
         source_priorities: dict[str, int] | None = None,
         post_major_updates: bool = True,
         post_source_updates: bool = False,
+        retention_after_days: int | None = None,
+        retention_action: str = "archive",
+        retention_batch_size: int = 25,
     ) -> None:
         self._database = database
         self._sources = sources
@@ -73,6 +76,11 @@ class FeedService:
         }
         self._post_major_updates = post_major_updates
         self._post_source_updates = post_source_updates
+        self._retention_after = (
+            timedelta(days=retention_after_days) if retention_after_days is not None else None
+        )
+        self._retention_action = retention_action
+        self._retention_batch_size = retention_batch_size
         self._feed_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
         self._stopping = asyncio.Event()
@@ -81,6 +89,7 @@ class FeedService:
         while not self._stopping.is_set():
             try:
                 await self._database.mark_stale_stories(utc_now() - self._stale_after)
+                await self.cleanup_old_stories()
                 for feed in await self._database.due_feeds(utc_now()):
                     try:
                         await self.poll_feed(feed.id)
@@ -93,6 +102,42 @@ class FeedService:
                 log.exception("scheduler tick failed", extra={"event": "scheduler_crash"})
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=self._tick_seconds)
+
+    async def cleanup_old_stories(self) -> int:
+        if self._retention_after is None:
+            return 0
+        stories = await self._database.stories_for_cleanup(
+            before=utc_now() - self._retention_after,
+            limit=self._retention_batch_size,
+        )
+        cleared = 0
+        for story in stories:
+            try:
+                if self._retention_action == "delete":
+                    await self._publisher.delete_story(story)
+                else:
+                    await self._publisher.archive_story(story)
+                await self._database.mark_story_cleared(story.id, action=self._retention_action)
+                cleared += 1
+            except PublishError:
+                log.exception(
+                    "story cleanup failed",
+                    extra={
+                        "event": "cleanup_failed",
+                        "story_id": story.id,
+                        "action": self._retention_action,
+                    },
+                )
+        if cleared:
+            log.info(
+                "old stories cleared",
+                extra={
+                    "event": "cleanup_completed",
+                    "action": self._retention_action,
+                    "count": cleared,
+                },
+            )
+        return cleared
 
     def stop(self) -> None:
         self._stopping.set()
