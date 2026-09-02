@@ -82,6 +82,7 @@ class FakeAnalyzer:
         self.relate_first = relate_first
         self.calls: list[tuple[str, ...]] = []
         self.closed = False
+        self.models: dict[int, str] = {}
 
     async def analyze_story(
         self,
@@ -109,6 +110,17 @@ class FakeAnalyzer:
 
     async def close(self) -> None:
         self.closed = True
+
+    def model_for(self, guild_id: int) -> str:
+        return self.models.get(guild_id, "openrouter/auto")
+
+    async def validate_model(self, model: str) -> str:
+        if model != "deepseek/deepseek-v4-flash-0731":
+            raise ValueError("OpenRouter model was not found")
+        return model
+
+    def set_model(self, guild_id: int, model: str) -> None:
+        self.models[guild_id] = model
 
 
 async def _feed(database: Database, name: str = "wire", *, kind: FeedKind = FeedKind.RSS) -> Feed:
@@ -356,6 +368,23 @@ async def test_openrouter_failure_uses_same_finalizer_without_duplicate_post(tmp
     assert publisher.created == 1
     assert publisher.updated == 1
     assert len(analyzer.calls) == 2
+    await database.close()
+
+
+async def test_admin_model_setting_is_validated_persisted_and_applied(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    model = await service.configure_analysis_model(
+        guild_id=1,
+        model="deepseek/deepseek-v4-flash-0731",
+        actor_id=42,
+    )
+    assert model == "deepseek/deepseek-v4-flash-0731"
+    assert service.analysis_model(1) == model
+    assert await database.openrouter_models() == {1: model}
     await database.close()
 
 

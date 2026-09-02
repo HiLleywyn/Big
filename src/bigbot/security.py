@@ -71,7 +71,14 @@ class _TextExtractor(HTMLParser):
 
 def plain_text(value: str, *, limit: int) -> str:
     parser = _TextExtractor()
-    parser.feed(value)
+    escaped = re.sub(
+        r"&(?!(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);)",
+        "&amp;",
+        value,
+        flags=re.IGNORECASE,
+    )
+    parser.feed(escaped)
+    parser.close()
     text = re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
     text = neutralize_mentions(text)
     if len(text) <= limit:

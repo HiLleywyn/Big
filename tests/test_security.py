@@ -48,6 +48,13 @@ def test_plain_text_strips_markup_and_neutralizes_mentions() -> None:
     )
 
 
+def test_plain_text_preserves_bare_ampersands_at_end_of_title() -> None:
+    title = "Rising numbers of children in mental health crisis ending up in A&E"
+    assert plain_text(title, limit=100) == title
+    assert plain_text("AT&T reports", limit=100) == "AT&T reports"
+    assert plain_text("Markets &amp; Economy", limit=100) == "Markets & Economy"
+
+
 def test_forum_title_is_bounded_and_never_empty() -> None:
     assert len(forum_title("x" * 200)) == 100
     assert forum_title(" <br> ") == "New feed item"

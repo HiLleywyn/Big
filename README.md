@@ -83,7 +83,7 @@ BIG_DATABASE_PATH   SQLite path, default data/big.db
 BIG_HEALTH_PORT     Local health port, default 8787
 X_BEARER_TOKEN      Only required for official X feeds
 OPENROUTER_API_KEY  Optional, enables story-level OpenRouter analysis
-BIG_OPENROUTER_MODEL OpenRouter model, default openrouter/auto
+BIG_OPENROUTER_MODEL OpenRouter model, default deepseek/deepseek-v4-flash-0731
 BIG_AI_WEB_SEARCH   Allow OpenRouter web search, default true
 BIG_AI_ZDR          Require zero data retention routing, default true
 BIG_RELATED_STORY_LIMIT Maximum bounded relationship candidates, default 8
@@ -108,9 +108,15 @@ enabled. Returned IDs are rejected unless they appeared in that exact list. Acce
 relationships are stored once as an unordered pair, and both Discord starter posts receive a
 reciprocal thread link. Shared categories, tags, names, or places are not enough for a relationship.
 
-`BIG_AI_WEB_SEARCH=true` allows the configured model to use OpenRouter web search. Structured JSON
-Schema output is required and every returned field is validated before persistence. Keep
+`BIG_AI_WEB_SEARCH=true` runs a bounded OpenRouter web research pass before the structured story
+analysis. Both calls use the same shared client and remain inside the same story finalization path.
+Structured JSON Schema output is required, citation links are checked against supplied articles
+and OpenRouter annotations, and every returned field is validated before persistence. Keep
 `BIG_AI_ZDR=true` unless you intentionally choose providers without zero data retention support.
+
+Server administrators can use `/news settings` to validate and save a model for their server.
+The saved model takes effect immediately and persists in SQLite across restarts. The environment
+model remains the default for servers without an override.
 
 ```yaml
 guild_id: 123456789012345678

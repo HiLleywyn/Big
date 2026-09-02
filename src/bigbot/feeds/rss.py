@@ -11,7 +11,13 @@ import httpx2
 
 from bigbot.domain import Feed, FeedItem, FetchResult
 from bigbot.feeds.base import FeedFetchError
-from bigbot.security import Resolver, resolve_host, safe_external_link, validate_feed_url
+from bigbot.security import (
+    Resolver,
+    plain_text,
+    resolve_host,
+    safe_external_link,
+    validate_feed_url,
+)
 
 
 class RssSource:
@@ -85,7 +91,9 @@ def parse_rss_bytes(body: bytes) -> tuple[FeedItem, ...]:
     parsed = feedparser.parse(body)
     if parsed.bozo and not parsed.entries:
         raise FeedFetchError("RSS document could not be parsed")
-    items = [_entry_to_item(entry, parsed.feed) for entry in parsed.entries]
+    items = [
+        item for entry in parsed.entries if (item := _entry_to_item(entry, parsed.feed)) is not None
+    ]
     if any(item.published_at for item in items):
         items.sort(key=lambda item: item.published_at or datetime.min.replace(tzinfo=UTC))
     else:
@@ -95,8 +103,10 @@ def parse_rss_bytes(body: bytes) -> tuple[FeedItem, ...]:
     return tuple(items)
 
 
-def _entry_to_item(entry: Any, feed: Any) -> FeedItem:
-    title = str(entry.get("title") or "New feed item")
+def _entry_to_item(entry: Any, feed: Any) -> FeedItem | None:
+    title = plain_text(str(entry.get("title") or ""), limit=500)
+    if not title:
+        return None
     link = safe_external_link(str(entry.get("link") or ""))
     summary = str(entry.get("summary") or entry.get("description") or title)
     published_at = _entry_time(entry)

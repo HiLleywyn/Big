@@ -42,4 +42,8 @@ def test_story_embed_renders_analysis_and_related_thread_link() -> None:
     assert "Directly related story" in related_field["value"]
     assert embed["footer"]["text"] == "Last updated"
     assert "<t:" not in embed["footer"]["text"]
-    assert embed["timestamp"] == current.last_updated_at.isoformat()
+    expected_timestamp = max(
+        current.last_updated_at,
+        current.analysis_updated_at or current.last_updated_at,
+    )
+    assert embed["timestamp"] == expected_timestamp.isoformat()

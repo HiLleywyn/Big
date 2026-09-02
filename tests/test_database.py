@@ -61,3 +61,20 @@ async def test_duplicate_name_is_scoped_to_guild(tmp_path) -> None:
     with pytest.raises(DuplicateFeedError):
         await _feed(database)
     await database.close()
+
+
+async def test_openrouter_model_setting_persists_by_guild(tmp_path) -> None:
+    path = tmp_path / "big.db"
+    database = Database(path)
+    await database.connect()
+    await database.set_openrouter_model(
+        guild_id=11,
+        model="deepseek/deepseek-v4-flash-0731",
+        actor_id=22,
+    )
+    await database.close()
+
+    reopened = Database(path)
+    await reopened.connect()
+    assert await reopened.openrouter_models() == {11: "deepseek/deepseek-v4-flash-0731"}
+    await reopened.close()

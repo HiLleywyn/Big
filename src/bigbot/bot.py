@@ -15,7 +15,7 @@ from bigbot.clustering import DeterministicClusterer
 from bigbot.config import Settings
 from bigbot.database import Database, DuplicateFeedError
 from bigbot.domain import Feed, FeedKind, FeedState
-from bigbot.enrichment import build_story_analyzer
+from bigbot.enrichment import EnrichmentError, build_story_analyzer
 from bigbot.feeds.base import FeedSource
 from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
@@ -88,6 +88,7 @@ class BigBot(commands.Bot):
             ),
         }
         config = self.settings.app_config
+        model_overrides = await self.database.openrouter_models()
         self.feed_service = FeedService(
             database=self.database,
             sources=sources,
@@ -104,7 +105,7 @@ class BigBot(commands.Bot):
             retention_after_days=config.retention.clear_after_days,
             retention_action=config.retention.action,
             retention_batch_size=config.retention.batch_size,
-            analyzer=build_story_analyzer(self.settings),
+            analyzer=build_story_analyzer(self.settings, model_overrides=model_overrides),
             related_story_limit=self.settings.related_story_limit,
         )
 
@@ -197,6 +198,21 @@ class NewsCommands(app_commands.Group):
     async def feeds(self, interaction: discord.Interaction) -> None:
         view = await _make_feed_dashboard(self.bot, interaction)
         await interaction.response.send_message(view=view, ephemeral=True)
+
+    @app_commands.command(name="settings", description="Configure story analysis")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def settings(self, interaction: discord.Interaction) -> None:
+        guild_id = _guild_id(interaction)
+        await interaction.response.send_message(
+            view=AnalysisSettingsView(
+                bot=self.bot,
+                user_id=interaction.user.id,
+                guild_id=guild_id,
+                model=self.bot.feed_service.analysis_model(guild_id),
+            ),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="add-feed", description="Open the feed add form")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -358,6 +374,91 @@ class FeedDashboardView(OwnedLayoutView):
         if notice:
             lines.insert(0, notice)
         return _panel_text("Feeds", lines)
+
+
+class AnalysisSettingsView(OwnedLayoutView):
+    def __init__(
+        self,
+        *,
+        bot: BigBot,
+        user_id: int,
+        guild_id: int,
+        model: str | None,
+        notice: str | None = None,
+    ) -> None:
+        super().__init__(bot=bot, user_id=user_id, guild_id=guild_id)
+        self.model = model
+        lines = [
+            f"Model: `{_clean_text(model, 200)}`" if model else "OpenRouter is not configured.",
+            f"Web grounding: {'on' if bot.settings.ai_web_search else 'off'}",
+        ]
+        if notice:
+            lines.insert(0, notice)
+        container: discord.ui.Container[AnalysisSettingsView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(discord.ui.TextDisplay(_panel_text("Story Analysis", lines)))
+        container.add_item(discord.ui.ActionRow(ChangeAnalysisModelButton(disabled=model is None)))
+        self.add_item(container)
+
+
+class ChangeAnalysisModelButton(discord.ui.Button[AnalysisSettingsView]):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(
+            label="Change model",
+            style=discord.ButtonStyle.primary,
+            custom_id="big:settings:model",
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None or parent.model is None:
+            return
+        await interaction.response.send_modal(
+            AnalysisModelModal(parent.bot, parent.guild_id, parent.model)
+        )
+
+
+class AnalysisModelModal(discord.ui.Modal):
+    def __init__(self, bot: BigBot, guild_id: int, current_model: str) -> None:
+        super().__init__(
+            title="Story analysis model",
+            timeout=300,
+            custom_id="big:settings:model_form",
+        )
+        self.bot = bot
+        self.guild_id = guild_id
+        self.model_input: discord.ui.TextInput[AnalysisModelModal] = discord.ui.TextInput(
+            custom_id="model",
+            default=current_model,
+            placeholder="provider/model",
+            min_length=3,
+            max_length=200,
+        )
+        self.add_item(discord.ui.Label(text="OpenRouter model", component=self.model_input))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            model = await self.bot.feed_service.configure_analysis_model(
+                guild_id=self.guild_id,
+                model=self.model_input.value,
+                actor_id=interaction.user.id,
+            )
+        except (EnrichmentError, ValueError) as exc:
+            await _send_notice(interaction, "Story Analysis", (str(exc),))
+            return
+        await interaction.followup.send(
+            view=AnalysisSettingsView(
+                bot=self.bot,
+                user_id=interaction.user.id,
+                guild_id=self.guild_id,
+                model=model,
+                notice="Model saved.",
+            ),
+            ephemeral=True,
+        )
 
 
 class AddFeedButton(discord.ui.Button[FeedDashboardView]):

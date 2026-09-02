@@ -189,12 +189,22 @@ CREATE TABLE story_relationships (
 CREATE INDEX idx_story_relationships_high ON story_relationships (story_id_high);
 """
 
+GUILD_SETTINGS_SCHEMA = """
+CREATE TABLE guild_settings (
+    guild_id INTEGER PRIMARY KEY,
+    openrouter_model TEXT NOT NULL,
+    updated_by INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 MIGRATIONS = (
     (1, SCHEMA),
     (2, STORY_SCHEMA),
     (3, FEED_PUBLISHER_SCHEMA),
     (4, CLEAR_STORIES_SCHEMA),
     (5, STORY_ANALYSIS_SCHEMA),
+    (6, GUILD_SETTINGS_SCHEMA),
 )
 
 
@@ -1266,6 +1276,24 @@ class Database:
                 json.dumps(detail or {}, separators=(",", ":"), sort_keys=True),
                 utc_now().isoformat(),
             ),
+        )
+        await self._db().commit()
+
+    async def openrouter_models(self) -> dict[int, str]:
+        cursor = await self._db().execute("SELECT guild_id, openrouter_model FROM guild_settings")
+        return {int(row["guild_id"]): str(row["openrouter_model"]) async for row in cursor}
+
+    async def set_openrouter_model(self, *, guild_id: int, model: str, actor_id: int) -> None:
+        await self._db().execute(
+            """
+            INSERT INTO guild_settings (guild_id, openrouter_model, updated_by, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                openrouter_model = excluded.openrouter_model,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (guild_id, model, actor_id, utc_now().isoformat()),
         )
         await self._db().commit()
 

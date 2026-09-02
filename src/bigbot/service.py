@@ -158,6 +158,38 @@ class FeedService:
             if self._analyzer is not None:
                 await self._analyzer.close()
 
+    def analysis_model(self, guild_id: int) -> str | None:
+        if self._analyzer is None:
+            return None
+        return self._analyzer.model_for(guild_id)
+
+    async def configure_analysis_model(self, *, guild_id: int, model: str, actor_id: int) -> str:
+        if self._analyzer is None:
+            raise ValueError("OpenRouter is not configured")
+        validated = await self._analyzer.validate_model(model)
+        await self._database.set_openrouter_model(
+            guild_id=guild_id,
+            model=validated,
+            actor_id=actor_id,
+        )
+        self._analyzer.set_model(guild_id, validated)
+        await self._database.audit(
+            guild_id=guild_id,
+            actor_id=actor_id,
+            action="news.analysis_model",
+            subject=validated,
+        )
+        log.info(
+            "story analysis model updated",
+            extra={
+                "event": "analysis_model_updated",
+                "guild_id": guild_id,
+                "actor_id": actor_id,
+                "model": validated,
+            },
+        )
+        return validated
+
     async def poll_feed(self, feed_id: int) -> PollReport:
         lock = self._feed_locks.setdefault(feed_id, asyncio.Lock())
         async with lock:

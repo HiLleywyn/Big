@@ -54,6 +54,16 @@ def test_invalid_rss_fails_closed() -> None:
         parse_rss_bytes(b"this is not XML")
 
 
+def test_titleless_entry_waits_for_a_complete_feed_item() -> None:
+    body = b"""<rss version="2.0"><channel><title>Wire</title>
+    <item><guid>incomplete</guid><title></title>
+    <description>Details arrived first.</description></item>
+    <item><guid>complete</guid><title>Complete story</title></item>
+    </channel></rss>"""
+    items = parse_rss_bytes(body)
+    assert [item.external_id for item in items] == ["complete"]
+
+
 def test_undated_newest_first_feed_becomes_oldest_first() -> None:
     body = b"""<rss version="2.0"><channel><title>Wire</title>
     <item><guid>new</guid><title>New</title></item>

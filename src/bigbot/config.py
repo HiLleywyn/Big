@@ -294,7 +294,9 @@ def load_settings(*, require_discord: bool = False) -> Settings:
         discord_token=os.getenv("DISCORD_TOKEN") or None,
         x_bearer_token=os.getenv("X_BEARER_TOKEN") or None,
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
-        openrouter_model=os.getenv("BIG_OPENROUTER_MODEL", "openrouter/auto").strip(),
+        openrouter_model=os.getenv(
+            "BIG_OPENROUTER_MODEL", "deepseek/deepseek-v4-flash-0731"
+        ).strip(),
         ai_web_search=_boolean("BIG_AI_WEB_SEARCH", "true"),
         ai_zdr=_boolean("BIG_AI_ZDR", "true"),
         related_story_limit=_integer("BIG_RELATED_STORY_LIMIT", "8"),

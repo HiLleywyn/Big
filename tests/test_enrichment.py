@@ -71,8 +71,8 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
         assert body["provider"] == {
             "data_collection": "deny",
             "zdr": True,
-            "require_parameters": True,
         }
+        assert body["model"] == "deepseek/deepseek-v4-flash-0731"
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
         supplied = json.loads(body["messages"][1]["content"])
@@ -109,7 +109,7 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     enricher = OpenRouterEnricher(
         api_key="secret",
-        model="openrouter/auto",
+        model="deepseek/deepseek-v4-flash-0731",
         web_search=False,
         zdr=True,
         timeout_seconds=15,
@@ -124,7 +124,127 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
     assert result.text.startswith("**Summary**\n")
     assert "**Key facts**" in result.text
     assert "Unclear or disputed" not in result.text
+    assert "**Analysis sources**" in result.text
+    assert "[Reuters](https://reuters.example/story)" in result.text
+    assert "[AP](https://ap.example/story)" in result.text
     assert "\u2014" not in result.text
+    await client.aclose()
+
+
+async def test_story_analysis_uses_web_grounding_and_response_repair() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if "tools" in body:
+            assert body["tools"][0]["type"] == "openrouter:web_search"
+            assert "response_format" not in body
+            return httpx2.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "A directly connected report confirms the event.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
+                                            "url": "https://research.example/report",
+                                            "title": "Direct report",
+                                            "content": "The event was confirmed.",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        supplied = json.loads(body["messages"][1]["content"])
+        assert supplied["web_evidence"]["sources"][0]["url"] == ("https://research.example/report")
+        assert "plugins" not in body
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "A report confirmed the event.",
+                                    "key_facts": ["The event was reported."],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [],
+                                }
+                            ),
+                            "annotations": [],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="deepseek/deepseek-v4-flash-0731",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+    result = await enricher.analyze_story(story(1), [article(1, "Wire")], [])
+    assert len(requests) == 2
+    assert "[research.example](https://research.example/report)" in result.text
+    await client.aclose()
+
+
+async def test_model_override_is_validated_and_applied_per_guild() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            return httpx2.Response(
+                200,
+                json={"data": [{"id": "deepseek/deepseek-v4-flash-0731"}]},
+            )
+        body = json.loads(request.content)
+        assert body["model"] == "deepseek/deepseek-v4-flash-0731"
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "A report confirmed the event.",
+                                    "key_facts": ["The event was reported."],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [],
+                                }
+                            ),
+                            "annotations": [],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="openrouter/auto",
+        web_search=False,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+    model = await enricher.validate_model(" deepseek/deepseek-v4-flash-0731 ")
+    enricher.set_model(1, model)
+    assert enricher.model_for(1) == "deepseek/deepseek-v4-flash-0731"
+    assert enricher.model_for(2) == "openrouter/auto"
+    await enricher.analyze_story(story(1), [article(1, "Wire")], [])
     await client.aclose()
 
 

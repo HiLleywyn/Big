@@ -85,6 +85,9 @@ class DiscordForumPublisher:
         try:
             if thread.archived:
                 await thread.edit(archived=False, reason=f"Big story {story.id} update")
+            expected_name = forum_title(story.title)
+            if thread.name != expected_name:
+                await thread.edit(name=expected_name, reason=f"Big story {story.id} title")
             parent = thread.parent
             if isinstance(parent, discord.ForumChannel):
                 tags = self._resolve_tags(parent, story.tags, ())
@@ -259,7 +262,10 @@ def _story_embed(
         title=plain_text(story.title, limit=256),
         description=_story_description(story),
         color=_state_color(story),
-        timestamp=story.last_updated_at,
+        timestamp=max(
+            story.last_updated_at,
+            story.analysis_updated_at or story.last_updated_at,
+        ),
     )
     if primary:
         published = _discord_time(primary.published_at)

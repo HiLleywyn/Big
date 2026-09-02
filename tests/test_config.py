@@ -19,7 +19,7 @@ def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
     assert settings.openrouter_api_key is None
     assert settings.ai_web_search
     assert settings.ai_zdr
-    assert settings.openrouter_model == "openrouter/auto"
+    assert settings.openrouter_model == "deepseek/deepseek-v4-flash-0731"
     assert settings.related_story_limit == 8
 
 
