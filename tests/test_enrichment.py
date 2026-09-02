@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -245,6 +246,54 @@ async def test_model_override_is_validated_and_applied_per_guild() -> None:
     assert enricher.model_for(1) == "deepseek/deepseek-v4-flash-0731"
     assert enricher.model_for(2) == "openrouter/auto"
     await enricher.analyze_story(story(1), [article(1, "Wire")], [])
+    await client.aclose()
+
+
+async def test_web_research_timeout_falls_back_to_feed_sources() -> None:
+    calls = 0
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            try:
+                await asyncio.sleep(0.02)
+            finally:
+                enricher._request_timeout_seconds = 1
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "A report confirmed the event.",
+                                    "key_facts": ["The event was reported."],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [],
+                                }
+                            ),
+                            "annotations": [],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="deepseek/deepseek-v4-flash-0731",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+    enricher._request_timeout_seconds = 0.001
+    result = await enricher.analyze_story(story(1), [article(1, "Wire")], [])
+    assert calls == 2
+    assert "A report confirmed the event." in result.text
     await client.aclose()
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,8 +15,14 @@ from bigbot.config import Settings
 from bigbot.domain import Article, Story
 from bigbot.security import neutralize_mentions, safe_external_link
 
+log = logging.getLogger(__name__)
+
 
 class EnrichmentError(RuntimeError):
+    pass
+
+
+class OpenRouterTimeout(EnrichmentError):
     pass
 
 
@@ -57,6 +65,7 @@ class OpenRouterEnricher:
         self._model_overrides = dict(model_overrides or {})
         self._web_search = web_search
         self._zdr = zdr
+        self._request_timeout_seconds = max(timeout_seconds, 60)
         self._owns_client = client is None
         self._client = client or httpx2.AsyncClient(
             base_url="https://openrouter.ai/api/v1",
@@ -81,7 +90,16 @@ class OpenRouterEnricher:
         web_evidence: dict[str, object] | None = None
         annotation_links: tuple[str, ...] = ()
         if self._web_search:
-            web_evidence, annotation_links = await self._research_story(story, articles)
+            try:
+                web_evidence, annotation_links = await self._research_story(story, articles)
+            except OpenRouterTimeout:
+                log.warning(
+                    "story web research timed out; continuing with feed sources",
+                    extra={
+                        "event": "story_web_research_timeout",
+                        "story_id": story.id,
+                    },
+                )
         analysis_input: dict[str, object] = {
             "story_id": story.id,
             "articles": [_article_input(article) for article in articles],
@@ -108,6 +126,10 @@ class OpenRouterEnricher:
                         "or the fact that you are summarizing. Do not call something verified, "
                         "corroborated, or confirmed unless that distinction is central to the "
                         "event. A source page being unavailable is not itself a dispute. "
+                        "Keep the summary to no more than three sentences. Include only facts "
+                        "directly about the central event and its subjects. Exclude other events "
+                        "that merely happened at the same tournament, conference, market, place, "
+                        "or time. "
                         "Related stories must be directly connected events, not merely a shared "
                         "category, tag, organization, person, or place. Return only the required "
                         "structured result."
@@ -246,7 +268,10 @@ class OpenRouterEnricher:
 
     async def _completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = await self._client.post("/chat/completions", json=payload)
+            async with asyncio.timeout(self._request_timeout_seconds):
+                response = await self._client.post("/chat/completions", json=payload)
+        except TimeoutError as exc:
+            raise OpenRouterTimeout("OpenRouter request timed out") from exc
         except httpx2.HTTPError as exc:
             raise EnrichmentError(f"OpenRouter request failed: {type(exc).__name__}") from exc
         if response.status_code == 429:
