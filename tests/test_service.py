@@ -247,10 +247,13 @@ async def test_startup_analysis_recovery_uses_finalization_without_duplicate_pos
     publisher = FakePublisher()
     database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
     feed = await _feed(database)
-    assert await service.process_item(
-        feed,
-        _item("story-1", "Court publishes a final ruling", "Wire", "https://example.com/1"),
-    ) == "new_stories"
+    assert (
+        await service.process_item(
+            feed,
+            _item("story-1", "Court publishes a final ruling", "Wire", "https://example.com/1"),
+        )
+        == "new_stories"
+    )
     assert publisher.created == 1
 
     analyzer = FakeAnalyzer()

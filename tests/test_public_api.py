@@ -52,9 +52,7 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
         related_story_ids=(),
     )
 
-    payload = await build_story_feed(
-        database, limit=10, public_site_url="https://bigif.org"
-    )
+    payload = await build_story_feed(database, limit=10, public_site_url="https://bigif.org")
     stories = payload["stories"]
     assert isinstance(stories, list)
     assert len(stories) == 1

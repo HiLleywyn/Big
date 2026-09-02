@@ -108,10 +108,15 @@ class Settings:
             raise ConfigurationError("BIG_PUBLIC_SITE_URL must be an HTTPS origin or base URL")
         for origin in self.public_cors_origins:
             parsed = urlsplit(origin)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.path not in {
-                "",
-                "/",
-            }:
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.path
+                not in {
+                    "",
+                    "/",
+                }
+            ):
                 raise ConfigurationError("BIG_PUBLIC_CORS_ORIGINS contains an invalid origin")
         clustering = self.app_config.clustering
         if not 0.5 <= clustering.threshold <= 0.95:
@@ -153,9 +158,7 @@ def _boolean(name: str, default: str) -> bool:
 
 def _environment_tuple(name: str, default: str) -> tuple[str, ...]:
     return tuple(
-        value.strip().rstrip("/")
-        for value in os.getenv(name, default).split(",")
-        if value.strip()
+        value.strip().rstrip("/") for value in os.getenv(name, default).split(",") if value.strip()
     )
 
 
@@ -336,10 +339,7 @@ def load_settings(*, require_discord: bool = False) -> Settings:
         public_site_url=os.getenv("BIG_PUBLIC_SITE_URL", "https://bigif.org").strip().rstrip("/"),
         public_cors_origins=_environment_tuple(
             "BIG_PUBLIC_CORS_ORIGINS",
-            (
-                "https://bigif.org,https://www.bigif.org,"
-                "http://127.0.0.1:4173,http://localhost:4173"
-            ),
+            ("https://bigif.org,https://www.bigif.org,http://127.0.0.1:4173,http://localhost:4173"),
         ),
     )
     settings.validate(require_discord=require_discord)

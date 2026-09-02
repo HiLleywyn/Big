@@ -319,8 +319,7 @@ def _story_embed(
         embed.add_field(
             name="Primary source",
             value=(
-                f"[{plain_text(primary.publisher, limit=100)}]"
-                f"({safe_external_link(primary.url)})"
+                f"[{plain_text(primary.publisher, limit=100)}]({safe_external_link(primary.url)})"
             ),
             inline=False,
         )

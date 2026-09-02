@@ -70,8 +70,6 @@ async def test_public_story_feed_is_bounded_and_cors_is_allowlisted() -> None:
             assert response.status == 200
             assert (await response.json())["stories"] == [{"id": 12}]
             assert response.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:4173"
-        async with session.get(
-            f"http://127.0.0.1:{port}/api/v1/stories?limit=101"
-        ) as response:
+        async with session.get(f"http://127.0.0.1:{port}/api/v1/stories?limit=101") as response:
             assert response.status == 400
     await server.close()

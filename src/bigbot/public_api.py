@@ -18,9 +18,7 @@ async def build_story_feed(
     }
 
 
-async def _story_item(
-    database: Database, story: Story, public_site_url: str
-) -> dict[str, object]:
+async def _story_item(database: Database, story: Story, public_site_url: str) -> dict[str, object]:
     articles = await database.story_articles(story.id)
     related = await database.related_stories(story.id)
     primary = _primary_article(story, articles)

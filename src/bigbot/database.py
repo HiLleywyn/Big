@@ -772,7 +772,7 @@ class Database:
         cursor = await self._db().execute(
             f"""
             SELECT * FROM stories
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY last_updated_at DESC, id DESC
             LIMIT ?
             """,
