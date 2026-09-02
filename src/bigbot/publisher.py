@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Protocol
 
 import discord
 
+from bigbot.analysis_format import analysis_display
 from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story
 from bigbot.security import forum_title, neutralize_mentions, plain_text, safe_external_link
 
 log = logging.getLogger(__name__)
+BRAND_ICON_FILENAME = "big-feed-mark.jpg"
+BRAND_ICON_URI = f"attachment://{BRAND_ICON_FILENAME}"
+BRAND_ICON_PATH = Path(__file__).with_name("assets") / BRAND_ICON_FILENAME
 
 
 class PublishError(RuntimeError):
@@ -44,8 +49,11 @@ class ForumPublisher(Protocol):
 
 
 class DiscordForumPublisher:
-    def __init__(self, client: discord.Client) -> None:
+    def __init__(
+        self, client: discord.Client, *, public_site_url: str = "https://bigif.org"
+    ) -> None:
         self._client = client
+        self._public_site_url = public_site_url.rstrip("/")
 
     async def create_story(
         self,
@@ -57,15 +65,25 @@ class DiscordForumPublisher:
         channel = await self._forum(feed.forum_channel_id, feed.guild_id)
         tags = self._resolve_tags(channel, story.tags, feed.tag_ids)
         try:
-            result = await channel.create_thread(
-                name=forum_title(story.title),
-                content=neutralize_mentions(_starter_content(story)),
-                embed=_story_embed(story, articles, related_stories),
-                applied_tags=tags,
-                auto_archive_duration=1440,
-                allowed_mentions=discord.AllowedMentions.none(),
-                reason=f"Big story {story.id}",
-            )
+            icon = _brand_icon_file()
+            try:
+                result = await channel.create_thread(
+                    name=forum_title(story.title),
+                    content=neutralize_mentions(_starter_content(story)),
+                    embed=_story_embed(
+                        story,
+                        articles,
+                        related_stories,
+                        public_site_url=self._public_site_url,
+                    ),
+                    file=icon,
+                    applied_tags=tags,
+                    auto_archive_duration=1440,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    reason=f"Big story {story.id}",
+                )
+            finally:
+                icon.close()
         except discord.HTTPException as exc:
             raise _publish_error("create forum story", exc) from exc
         return PublishReceipt(thread_id=result.thread.id, message_id=result.message.id)
@@ -94,17 +112,41 @@ class DiscordForumPublisher:
                 if tags:
                     await thread.edit(applied_tags=tags, reason=f"Big story {story.id} tags")
             starter = await thread.fetch_message(story.discord_starter_message_id)
-            await starter.edit(
-                content=neutralize_mentions(_starter_content(story)),
-                embed=_story_embed(story, articles, related_stories),
-                allowed_mentions=discord.AllowedMentions.none(),
+            content = neutralize_mentions(_starter_content(story))
+            embed = _story_embed(
+                story,
+                articles,
+                related_stories,
+                public_site_url=self._public_site_url,
             )
+            if not any(item.filename == BRAND_ICON_FILENAME for item in starter.attachments):
+                icon = _brand_icon_file()
+                try:
+                    await starter.edit(
+                        content=content,
+                        embed=embed,
+                        attachments=[*starter.attachments, icon],
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                finally:
+                    icon.close()
+            else:
+                await starter.edit(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             if not post_update:
                 return None
-            message = await thread.send(
-                embed=_update_embed(article),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            icon = _brand_icon_file()
+            try:
+                message = await thread.send(
+                    embed=_update_embed(article),
+                    file=icon,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            finally:
+                icon.close()
             return message.id
         except discord.HTTPException as exc:
             raise _publish_error("update forum story", exc) from exc
@@ -252,28 +294,33 @@ def _starter_content(story: Story) -> str:
 
 
 def _story_embed(
-    story: Story, articles: list[Article], related_stories: list[Story]
+    story: Story,
+    articles: list[Article],
+    related_stories: list[Story],
+    *,
+    public_site_url: str = "https://bigif.org",
 ) -> discord.Embed:
     primary = next(
         (article for article in articles if article.id == story.primary_article_id),
         articles[0] if articles else None,
     )
     embed = discord.Embed(
-        title=plain_text(story.title, limit=256),
+        title=forum_title(story.title),
         description=_story_description(story),
+        url=_web_story_url(public_site_url, story.id),
         color=_state_color(story),
-        timestamp=max(
-            story.last_updated_at,
-            story.analysis_updated_at or story.last_updated_at,
+        timestamp=(
+            (primary.published_at or primary.discovered_at)
+            if primary
+            else (story.first_published_at or story.last_updated_at)
         ),
     )
     if primary:
-        published = _discord_time(primary.published_at)
         embed.add_field(
             name="Primary source",
             value=(
                 f"[{plain_text(primary.publisher, limit=100)}]"
-                f"({safe_external_link(primary.url)})\n{published}"
+                f"({safe_external_link(primary.url)})"
             ),
             inline=False,
         )
@@ -287,6 +334,11 @@ def _story_embed(
     embed.add_field(
         name=f"Sources ({len(articles)})", value="\n".join(sources) or "None", inline=False
     )
+    if story.analysis_state is AnalysisState.READY and story.analysis:
+        analysis_sources = analysis_display(story.analysis).sources
+        if analysis_sources:
+            value = "\n".join(f"- [{label}]({url})" for label, url in analysis_sources)
+            embed.add_field(name="Analysis sources", value=value[:1024], inline=False)
     related = []
     for candidate in related_stories:
         if candidate.discord_thread_id is None:
@@ -299,13 +351,18 @@ def _story_embed(
             value="\n".join(related)[:1024],
             inline=False,
         )
-    embed.set_footer(text="Last updated")
+    embed.add_field(
+        name="Big If True",
+        value=f"[Open story page]({_web_story_url(public_site_url, story.id)})",
+        inline=False,
+    )
+    embed.set_footer(text="Published", icon_url=BRAND_ICON_URI)
     return embed
 
 
 def _story_description(story: Story) -> str:
     if story.analysis_state is AnalysisState.READY and story.analysis:
-        return neutralize_mentions(story.analysis)[:3000].rstrip()
+        return neutralize_mentions(analysis_display(story.analysis).body)[:3000].rstrip()
     return plain_text(story.summary, limit=3000)
 
 
@@ -318,7 +375,7 @@ def _update_embed(article: Article) -> discord.Embed:
         color=discord.Color.orange(),
         timestamp=article.published_at,
     )
-    embed.set_footer(text="Source added to this story")
+    embed.set_footer(text="Published", icon_url=BRAND_ICON_URI)
     return embed
 
 
@@ -330,9 +387,12 @@ def _state_color(story: Story) -> discord.Color:
     return discord.Color.from_rgb(88, 101, 242)
 
 
-def _discord_time(value: object) -> str:
-    timestamp = int(value.timestamp()) if hasattr(value, "timestamp") else 0
-    return f"<t:{timestamp}:F>" if timestamp else "Publication time unavailable"
+def _web_story_url(public_site_url: str, story_id: int) -> str:
+    return f"{public_site_url.rstrip('/')}/news/#story-{story_id}"
+
+
+def _brand_icon_file() -> discord.File:
+    return discord.File(BRAND_ICON_PATH, filename=BRAND_ICON_FILENAME)
 
 
 def _publish_error(action: str, error: discord.HTTPException) -> PublishError:

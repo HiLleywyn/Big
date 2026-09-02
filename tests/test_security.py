@@ -58,3 +58,9 @@ def test_plain_text_preserves_bare_ampersands_at_end_of_title() -> None:
 def test_forum_title_is_bounded_and_never_empty() -> None:
     assert len(forum_title("x" * 200)) == 100
     assert forum_title(" <br> ") == "New feed item"
+
+
+def test_forum_title_drops_bullet_content() -> None:
+    value = "Market closes higher - point one\n- point two\n- point three"
+    assert forum_title(value) == "Market closes higher"
+    assert forum_title("## Clean headline\n* detail") == "Clean headline"

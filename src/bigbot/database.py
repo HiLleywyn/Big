@@ -198,6 +198,13 @@ CREATE TABLE guild_settings (
 );
 """
 
+PRESENTATION_SCHEMA = """
+ALTER TABLE stories ADD COLUMN presentation_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX idx_stories_presentation
+    ON stories (presentation_version, publication_state, state);
+"""
+
 MIGRATIONS = (
     (1, SCHEMA),
     (2, STORY_SCHEMA),
@@ -205,6 +212,7 @@ MIGRATIONS = (
     (4, CLEAR_STORIES_SCHEMA),
     (5, STORY_ANALYSIS_SCHEMA),
     (6, GUILD_SETTINGS_SCHEMA),
+    (7, PRESENTATION_SCHEMA),
 )
 
 
@@ -565,7 +573,10 @@ class Database:
             keywords = tuple(sorted(set(story.keywords) | set(normalized.keywords)))[:24]
             numbers = tuple(sorted(set(story.numbers) | set(normalized.numbers)))
             events = tuple(sorted(set(story.event_terms) | set(normalized.event_terms)))
-            all_tags = tuple(dict.fromkeys((*story.tags, *tags)))[:5]
+            prior_topics = tuple(
+                tag for tag in story.tags if tag.casefold() not in {"breaking", "developing"}
+            )
+            all_tags = tuple(dict.fromkeys((*tags, *prior_topics)))[:5]
             replace_primary = priority > await self._story_priority(story.id)
             await database.execute(
                 """
@@ -681,6 +692,106 @@ class Database:
         cursor = await self._db().execute("SELECT * FROM stories WHERE id = ?", (story_id,))
         row = await cursor.fetchone()
         return _story_from_row(row) if row is not None else None
+
+    async def published_stories(self, *, limit: int = 50) -> list[Story]:
+        if not 1 <= limit <= 100:
+            raise ValueError("story limit must be between 1 and 100")
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE publication_state = 'published'
+              AND state != 'merged'
+              AND cleared_at IS NULL
+              AND discord_thread_id IS NOT NULL
+            ORDER BY last_updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def published_stories_needing_analysis(self, *, limit: int = 100) -> list[Story]:
+        if not 1 <= limit <= 500:
+            raise ValueError("story limit must be between 1 and 500")
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE publication_state = 'published'
+              AND state != 'merged'
+              AND cleared_at IS NULL
+              AND discord_thread_id IS NOT NULL
+              AND analysis_state IN ('disabled', 'failed')
+            ORDER BY last_updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def pending_stories_for_recovery(self, *, limit: int = 100) -> list[Story]:
+        if not 1 <= limit <= 500:
+            raise ValueError("story limit must be between 1 and 500")
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE publication_state = 'pending'
+              AND state != 'merged'
+              AND cleared_at IS NULL
+              AND discord_thread_id IS NULL
+            ORDER BY created_at, id
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def stories_for_presentation(
+        self,
+        *,
+        version: int,
+        forum_channel_id: int | None = None,
+        force: bool = False,
+        limit: int = 100,
+    ) -> list[Story]:
+        if not 1 <= limit <= 500:
+            raise ValueError("presentation limit must be between 1 and 500")
+        conditions = [
+            "publication_state = 'published'",
+            "state != 'merged'",
+            "cleared_at IS NULL",
+            "discord_thread_id IS NOT NULL",
+        ]
+        values: list[object] = []
+        if not force:
+            conditions.append("presentation_version < ?")
+            values.append(version)
+        if forum_channel_id is not None:
+            conditions.append("forum_channel_id = ?")
+            values.append(forum_channel_id)
+        values.append(limit)
+        cursor = await self._db().execute(
+            f"""
+            SELECT * FROM stories
+            WHERE {' AND '.join(conditions)}
+            ORDER BY last_updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            values,
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def save_story_presentation(
+        self, story_id: int, *, tags: tuple[str, ...], version: int
+    ) -> None:
+        await self._db().execute(
+            """
+            UPDATE stories
+            SET tags_json = ?, presentation_version = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(tags[:5]), version, utc_now().isoformat(), story_id),
+        )
+        await self._db().commit()
 
     async def get_article(self, article_id: int) -> Article | None:
         cursor = await self._db().execute("SELECT * FROM articles WHERE id = ?", (article_id,))

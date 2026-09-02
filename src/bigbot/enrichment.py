@@ -179,7 +179,8 @@ class OpenRouterEnricher:
                     },
                 },
             },
-            "max_completion_tokens": 3000,
+            "max_completion_tokens": 1800,
+            "reasoning": {"effort": "minimal", "exclude": True},
             "temperature": 0.1,
             "provider": {
                 "data_collection": "deny",

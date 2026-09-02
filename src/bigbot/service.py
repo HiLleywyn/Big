@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 
-from bigbot.classification import StoryClassifier
+from bigbot.classification import TAG_CATALOG, StoryClassifier
 from bigbot.clustering import StoryClusterer
 from bigbot.database import Database
 from bigbot.domain import (
@@ -27,6 +27,17 @@ from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
 
 log = logging.getLogger(__name__)
+PRESENTATION_VERSION = 4
+
+
+def _tags_for_state(tags: tuple[str, ...], state: StoryState) -> tuple[str, ...]:
+    state_tag = {
+        StoryState.BREAKING: "Breaking",
+        StoryState.DEVELOPING: "Developing",
+    }.get(state)
+    if state_tag is None:
+        return tags
+    return tuple(dict.fromkeys((state_tag, *tags)))[:5]
 
 
 @dataclass(frozen=True)
@@ -275,6 +286,7 @@ class FeedService:
                     if any(tag.casefold() == "breaking" for tag in tags)
                     else StoryState.NEW
                 )
+                tags = _tags_for_state(tags, state)
                 story, article = await self._database.create_story_with_article(
                     feed=feed,
                     item=item,
@@ -292,6 +304,7 @@ class FeedService:
                     state = StoryState.DEVELOPING
                 else:
                     state = StoryState.UPDATED
+                tags = _tags_for_state(tags, state)
                 story, article = await self._database.attach_article(
                     story=old_story,
                     feed=feed,
@@ -322,6 +335,168 @@ class FeedService:
                 article=article,
                 significant=significant,
             )
+
+    async def refresh_presentation(
+        self, *, forum_channel_id: int | None = None, force: bool = False
+    ) -> tuple[int, int]:
+        stories = await self._database.stories_for_presentation(
+            version=PRESENTATION_VERSION,
+            forum_channel_id=forum_channel_id,
+            force=force,
+        )
+        updated = 0
+        failed = 0
+        feeds: dict[int, Feed | None] = {}
+        for story in stories:
+            lock = self._story_locks.setdefault(story.id, asyncio.Lock())
+            async with lock:
+                articles = await self._database.story_articles(story.id)
+                if not articles:
+                    continue
+                tags: list[str] = []
+                for article in articles:
+                    feed = None
+                    if article.feed_id is not None:
+                        if article.feed_id not in feeds:
+                            feeds[article.feed_id] = await self._database.get_feed(article.feed_id)
+                        feed = feeds[article.feed_id]
+                    normalized = normalize_item(
+                        FeedItem(
+                            external_id=article.external_id,
+                            title=article.title,
+                            url=article.url,
+                            summary=article.description,
+                            author=None,
+                            publisher=article.publisher,
+                            published_at=article.published_at,
+                        ),
+                        fallback_publisher=article.publisher,
+                    )
+                    classified = self._classifier.classify(
+                        normalized,
+                        feed_tags=feed.default_tags if feed is not None else (),
+                    )
+                    tags.extend(classified)
+                known_tags = tuple(tag for tag in story.tags if tag in TAG_CATALOG)
+                resolved_tags = tuple(dict.fromkeys((*tags, *known_tags)))[:5]
+                resolved_tags = _tags_for_state(resolved_tags, story.state)
+                current = replace(story, tags=resolved_tags)
+                try:
+                    await self._publisher.update_story(
+                        current,
+                        articles,
+                        articles[-1],
+                        await self._database.related_stories(story.id),
+                        post_update=False,
+                    )
+                except PublishError:
+                    failed += 1
+                    log.exception(
+                        "story presentation refresh failed",
+                        extra={"event": "presentation_refresh_failed", "story_id": story.id},
+                    )
+                    continue
+                await self._database.save_story_presentation(
+                    story.id,
+                    tags=resolved_tags,
+                    version=PRESENTATION_VERSION,
+                )
+                updated += 1
+        log.info(
+            "story presentation refresh completed",
+            extra={
+                "event": "presentation_refresh_completed",
+                "updated": updated,
+                "failed": failed,
+                "forum_channel_id": forum_channel_id,
+            },
+        )
+        return updated, failed
+
+    async def recover_story_analysis(self) -> tuple[int, int]:
+        if self._analyzer is None:
+            return 0, 0
+        stories = await self._database.published_stories_needing_analysis()
+        semaphore = asyncio.Semaphore(2)
+
+        async def recover(story: Story) -> bool:
+            async with semaphore:
+                return await self._recover_story_analysis(story)
+
+        results = await asyncio.gather(*(recover(story) for story in stories))
+        ready = sum(results)
+        failed = len(results) - ready
+        log.info(
+            "story analysis recovery completed",
+            extra={
+                "event": "story_analysis_recovery_completed",
+                "ready": ready,
+                "failed": failed,
+            },
+        )
+        return ready, failed
+
+    async def recover_pending_stories(self) -> tuple[int, int]:
+        stories = await self._database.pending_stories_for_recovery()
+        published = 0
+        failed = 0
+        for story in stories:
+            articles = await self._database.story_articles(story.id)
+            if not articles:
+                failed += 1
+                continue
+            article = articles[-1]
+            if article.feed_id is None:
+                failed += 1
+                continue
+            feed = await self._database.get_feed(article.feed_id)
+            if feed is None:
+                failed += 1
+                continue
+            lock = self._story_locks.setdefault(story.id, asyncio.Lock())
+            async with lock:
+                outcome = await self._finalize_story(
+                    feed=feed,
+                    story=story,
+                    article=article,
+                    significant=False,
+                    allow_update_message=False,
+                )
+            if outcome == "new_stories":
+                published += 1
+            else:
+                failed += 1
+        log.info(
+            "pending story recovery completed",
+            extra={
+                "event": "pending_story_recovery_completed",
+                "published": published,
+                "failed": failed,
+            },
+        )
+        return published, failed
+
+    async def _recover_story_analysis(self, story: Story) -> bool:
+        articles = await self._database.story_articles(story.id)
+        if not articles:
+            return False
+        article = articles[-1]
+        if article.feed_id is None:
+            return False
+        feed = await self._database.get_feed(article.feed_id)
+        if feed is None:
+            return False
+        lock = self._story_locks.setdefault(story.id, asyncio.Lock())
+        async with lock:
+            await self._finalize_story(
+                feed=feed,
+                story=story,
+                article=article,
+                significant=False,
+                allow_update_message=False,
+            )
+        current = await self._database.get_story(story.id)
+        return current is not None and current.analysis_state is AnalysisState.READY
 
     async def _finalize_story(
         self,

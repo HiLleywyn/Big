@@ -29,10 +29,11 @@ sources, updates, and discussion
 - Posts significant developments as replies in the same thread.
 - Tracks `NEW`, `DEVELOPING`, `BREAKING`, `UPDATED`, `STALE`, and `MERGED` states.
 - Applies only tags that currently exist on the destination forum, up to Discord's limit.
+- Includes a 20-tag professional taxonomy and a Components V2 tag installer for administrators.
 - Persists feeds, articles, story relationships, Discord IDs, state, delivery outcomes, and
   moderator history in SQLite.
 - Fails closed when a Discord write may have succeeded but cannot be confirmed.
-- Exposes local health and readiness endpoints on port `8787`.
+- Exposes health, readiness, and a read-only public story feed on port `8787`.
 
 The deterministic clustering engine is the default and needs no paid AI service. It is behind
 a small interface so a local embedding strategy can be added later without coupling feed
@@ -50,7 +51,8 @@ src/bigbot/
   service.py         Ingestion, deduplication, clustering, retry, and story lifecycle
   publisher.py       Discord Forum Channel adapter
   bot.py             Discord client and /news administration commands
-  health.py          Health, readiness, and status HTTP endpoints
+  health.py          Health, readiness, status, and public story HTTP endpoints
+  public_api.py      Safe public story serialization for bigif.org
   config.py          Environment and YAML configuration
 ```
 
@@ -60,7 +62,7 @@ src/bigbot/
    [Discord Developer Portal](https://discord.com/developers/applications).
 2. Invite it with the `bot` and `applications.commands` scopes.
 3. Grant it View Channels, Send Messages, Create Public Threads, Send Messages in Threads,
-   Manage Threads, and Embed Links in the target forum.
+   Manage Threads, Embed Links, Attach Files, and Read Message History in the target forum.
 4. Copy `.env.example` to `.env` and set `DISCORD_TOKEN`.
 5. Copy `config.example.yaml` to `config.yaml`, replace the example IDs and feed URLs, then
    start Big.
@@ -138,19 +140,22 @@ retention:
   batch_size: 25
 
 source_priorities:
-  Reuters: 100
-  AP: 95
+  Federal Reserve: 100
+  PBS News: 95
 
 feeds:
-  - name: Markets Wire
-    publisher: Reuters
-    url: https://publisher.example/markets.xml
-    default_tags: [Markets]
+  - name: PBS News Headlines
+    publisher: PBS News
+    url: https://www.pbs.org/newshour/feeds/rss/headlines
+    default_tags: [United States]
 ```
 
 Each feed can override `forum_channel_id`. Default tags are combined with local automatic
 classification, but the publisher resolves names against the forum's current `available_tags`
 before sending anything. A required-tag forum fails safely when no configured tag exists.
+
+The complete source-selection guide, 20-tag catalog, permission list, and copy-paste setup are in
+[`docs/FEED_SETUP.md`](docs/FEED_SETUP.md).
 
 The first successful poll is capped by `BIG_MAX_BACKFILL` so enabling a feed cannot flood a
 forum. Older entries are recorded as skipped and remain deduplicated after restarts.
@@ -186,6 +191,7 @@ Members need Manage Server to change feeds or clusters.
 ```text
 /news status
 /news feeds
+/news tags
 /news add-feed
 /news remove-feed
 /news refresh
@@ -198,7 +204,12 @@ Members need Manage Server to change feeds or clusters.
 Feed management uses Discord Components v2 with panels, forum channel selects, buttons, and
 organized forms. `add-feed` first asks for a Forum Channel, then opens a form for name, publisher,
 RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection panel with a confirm
-step. `refresh` lets moderators refresh one feed or all feeds from the panel.
+step. `refresh` lets moderators refresh one feed or all feeds from the panel. `tags` checks the
+selected forum and can install the missing recommended tag names without deleting existing tags.
+
+Published stories are available to the website at `GET /api/v1/stories?limit=50`. The response
+contains only published story text, tags, source links, timestamps, and Discord thread links.
+Browser access is restricted by `BIG_PUBLIC_CORS_ORIGINS`.
 
 Story tools use short forms for IDs. `merge` moves the source cluster into the target and archives
 the old Discord thread. `split` moves one article into a fresh story and forum post. `reprocess`

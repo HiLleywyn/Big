@@ -6,8 +6,18 @@ from pathlib import Path
 from bigbot.classification import StoryClassifier
 from bigbot.clustering import DeterministicClusterer
 from bigbot.database import Database
-from bigbot.domain import Article, Feed, FeedItem, FeedKind, FetchResult, PublishReceipt, Story
+from bigbot.domain import (
+    Article,
+    Feed,
+    FeedItem,
+    FeedKind,
+    FetchResult,
+    PublishReceipt,
+    Story,
+    StoryState,
+)
 from bigbot.enrichment import EnrichmentError, StoryAnalysis
+from bigbot.normalization import normalize_item
 from bigbot.publisher import PublishError
 from bigbot.service import FeedService
 
@@ -205,6 +215,94 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     assert stored.analysis is not None and "2 sources" in stored.analysis
     assert publisher.updated_story_ids == [stored.id]
     assert "2 sources" in (publisher.analysis_by_story[stored.id] or "")
+    await database.close()
+
+
+async def test_presentation_refresh_reclassifies_and_edits_existing_story(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    feed = await _feed(database)
+    outcome = await service.process_item(
+        feed,
+        _item(
+            "fed-1",
+            "Federal Reserve cuts interest rate after inflation report",
+            "Wire",
+            "https://example.com/fed-1",
+        ),
+    )
+    assert outcome == "new_stories"
+
+    updated, failed = await service.refresh_presentation(force=True)
+    assert (updated, failed) == (1, 0)
+    assert publisher.updated == 1
+    story = (await database.published_stories(limit=1))[0]
+    assert story.tags[:2] == ("Markets", "Economy")
+
+    await service.close()
+    await database.close()
+
+
+async def test_startup_analysis_recovery_uses_finalization_without_duplicate_post(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    feed = await _feed(database)
+    assert await service.process_item(
+        feed,
+        _item("story-1", "Court publishes a final ruling", "Wire", "https://example.com/1"),
+    ) == "new_stories"
+    assert publisher.created == 1
+
+    analyzer = FakeAnalyzer()
+    recovered = FeedService(
+        database=database,
+        sources={FeedKind.RSS: FakeSource(())},
+        publisher=publisher,
+        clusterer=DeterministicClusterer(),
+        classifier=StoryClassifier.with_defaults(),
+        tick_seconds=15,
+        max_backfill=2,
+        clustering_window_hours=72,
+        stale_after_hours=96,
+        analyzer=analyzer,
+    )
+    assert await recovered.recover_story_analysis() == (1, 0)
+    assert publisher.created == 1
+    assert publisher.updated == 1
+    story = (await database.published_stories(limit=1))[0]
+    assert story.analysis_state.value == "ready"
+
+    await service.close()
+    await recovered.close()
+    await database.close()
+
+
+async def test_pending_story_recovery_finishes_confirmed_pre_publish_state(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item("pending-1", "Court publishes a final ruling", "Wire", "https://example.com/1")
+    normalized = normalize_item(item, fallback_publisher=feed.publisher)
+    story, _ = await database.create_story_with_article(
+        feed=feed,
+        item=item,
+        normalized=normalized,
+        tags=("Law",),
+        state=StoryState.NEW,
+        priority=0,
+    )
+
+    assert await service.recover_pending_stories() == (1, 0)
+    recovered = await database.get_story(story.id)
+    assert recovered is not None
+    assert recovered.publication_state.value == "published"
+    assert recovered.analysis_state.value == "ready"
+    assert publisher.created == 1
+
+    await service.close()
     await database.close()
 
 

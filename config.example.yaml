@@ -19,28 +19,61 @@ retention:
   action: archive
   batch_size: 25
 
+# Big includes a carefully bounded 20-tag classifier. Entries here extend those rules.
 tag_mappings:
-  Politics: [election, government, president, senate, vote]
-  World: [diplomat, international, nation, war]
-  Markets: [bond, fed, market, rate, stock]
-  Business: [company, earnings, merger, revenue]
-  Technology: [ai, chip, software, startup]
-  Crypto: [bitcoin, blockchain, crypto, ethereum]
-  Science: [climate, research, science, space]
-  Security: [breach, cyber, hack, malware]
-  Breaking: [breaking, urgent]
-  Developing: [developing, live, update]
+  Markets: [treasury auction, wall street]
+  Economy: [consumer price index, nonfarm payrolls]
+  Technology: [quantum computing]
+  Crypto: [digital asset]
 
 source_priorities:
-  Reuters: 100
-  AP: 95
+  Federal Reserve: 100
+  SEC: 100
+  NASA: 100
+  PBS News: 95
+  BBC News: 95
+  ProPublica: 92
+  Ars Technica: 90
+  UN News: 90
 
 feeds:
-  - name: Reuters Markets
-    publisher: Reuters
-    url: https://example.com/reuters-markets.rss
-    default_tags: [Markets]
-  - name: AP World
-    publisher: AP
-    url: https://example.com/ap-world.rss
+  - name: PBS News Headlines
+    publisher: PBS News
+    url: https://www.pbs.org/newshour/feeds/rss/headlines
+    default_tags: [United States]
+    interval_seconds: 900
+  - name: BBC World
+    publisher: BBC News
+    url: https://feeds.bbci.co.uk/news/world/rss.xml
     default_tags: [World]
+    interval_seconds: 900
+  - name: Federal Reserve Press Releases
+    publisher: Federal Reserve
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    default_tags: [Economy, Markets]
+    interval_seconds: 1800
+  - name: SEC Press Releases
+    publisher: SEC
+    url: https://www.sec.gov/news/pressreleases.rss
+    default_tags: [Markets, Law]
+    interval_seconds: 1800
+  - name: ProPublica
+    publisher: ProPublica
+    url: https://www.propublica.org/feeds/propublica/main
+    default_tags: [United States]
+    interval_seconds: 1800
+  - name: Ars Technica
+    publisher: Ars Technica
+    url: https://feeds.arstechnica.com/arstechnica/index
+    default_tags: [Technology]
+    interval_seconds: 1800
+  - name: NASA News Releases
+    publisher: NASA
+    url: https://www.nasa.gov/news-release/feed/
+    default_tags: [Science]
+    interval_seconds: 3600
+  - name: UN News
+    publisher: UN News
+    url: https://news.un.org/feed/subscribe/en/news/all/rss.xml
+    default_tags: [World]
+    interval_seconds: 1800

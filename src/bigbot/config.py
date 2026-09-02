@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import load_dotenv
@@ -78,6 +79,8 @@ class Settings:
     dry_run: bool
     health_host: str
     health_port: int
+    public_site_url: str
+    public_cors_origins: tuple[str, ...]
 
     def validate(self, *, require_discord: bool = False) -> None:
         if require_discord and not self.dry_run and not self.discord_token:
@@ -100,6 +103,16 @@ class Settings:
             raise ConfigurationError("BIG_RELATED_STORY_LIMIT must be between 0 and 20")
         if not 1024 <= self.health_port <= 65535:
             raise ConfigurationError("BIG_HEALTH_PORT must be between 1024 and 65535")
+        site = urlsplit(self.public_site_url)
+        if site.scheme != "https" or not site.hostname or site.query or site.fragment:
+            raise ConfigurationError("BIG_PUBLIC_SITE_URL must be an HTTPS origin or base URL")
+        for origin in self.public_cors_origins:
+            parsed = urlsplit(origin)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.path not in {
+                "",
+                "/",
+            }:
+                raise ConfigurationError("BIG_PUBLIC_CORS_ORIGINS contains an invalid origin")
         clustering = self.app_config.clustering
         if not 0.5 <= clustering.threshold <= 0.95:
             raise ConfigurationError("clustering.threshold must be between 0.5 and 0.95")
@@ -136,6 +149,14 @@ def _boolean(name: str, default: str) -> bool:
     if value in {"0", "false", "no", "off"}:
         return False
     raise ConfigurationError(f"{name} must be true or false")
+
+
+def _environment_tuple(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        value.strip().rstrip("/")
+        for value in os.getenv(name, default).split(",")
+        if value.strip()
+    )
 
 
 def load_app_config(path: Path) -> AppConfig:
@@ -312,6 +333,14 @@ def load_settings(*, require_discord: bool = False) -> Settings:
         dry_run=_boolean("BIG_DRY_RUN", "false"),
         health_host=os.getenv("BIG_HEALTH_HOST", "0.0.0.0").strip(),
         health_port=_integer("BIG_HEALTH_PORT", "8787"),
+        public_site_url=os.getenv("BIG_PUBLIC_SITE_URL", "https://bigif.org").strip().rstrip("/"),
+        public_cors_origins=_environment_tuple(
+            "BIG_PUBLIC_CORS_ORIGINS",
+            (
+                "https://bigif.org,https://www.bigif.org,"
+                "http://127.0.0.1:4173,http://localhost:4173"
+            ),
+        ),
     )
     settings.validate(require_discord=require_discord)
     return settings

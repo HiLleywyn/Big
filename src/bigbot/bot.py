@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bigbot.classification import StoryClassifier
+from bigbot.classification import TAG_CATALOG, StoryClassifier
 from bigbot.clustering import DeterministicClusterer
 from bigbot.config import Settings
 from bigbot.database import Database, DuplicateFeedError
@@ -20,6 +20,7 @@ from bigbot.feeds.base import FeedSource
 from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
 from bigbot.health import HealthServer
+from bigbot.public_api import build_story_feed
 from bigbot.publisher import DiscordForumPublisher
 from bigbot.security import validate_feed_url
 from bigbot.service import FeedService, PollReport
@@ -71,6 +72,7 @@ class BigBot(commands.Bot):
         self.settings = settings
         self.database = Database(settings.database_path)
         self._scheduler: asyncio.Task[None] | None = None
+        self._maintenance_tasks: set[asyncio.Task[object]] = set()
         self._health: HealthServer | None = None
         self._command_sync_pending = False
 
@@ -92,7 +94,7 @@ class BigBot(commands.Bot):
         self.feed_service = FeedService(
             database=self.database,
             sources=sources,
-            publisher=DiscordForumPublisher(self),
+            publisher=DiscordForumPublisher(self, public_site_url=self.settings.public_site_url),
             clusterer=DeterministicClusterer(config.clustering.threshold),
             classifier=StoryClassifier.with_defaults(config.tag_mappings),
             tick_seconds=self.settings.poll_tick_seconds,
@@ -119,8 +121,19 @@ class BigBot(commands.Bot):
                 "stories": sum(counts.values()),
             }
 
+        async def public_story_feed(limit: int) -> dict[str, object]:
+            return await build_story_feed(
+                self.database,
+                limit=limit,
+                public_site_url=self.settings.public_site_url,
+            )
+
         self._health = HealthServer(
-            self.settings.health_host, self.settings.health_port, health_status
+            self.settings.health_host,
+            self.settings.health_port,
+            health_status,
+            story_feed_provider=public_story_feed,
+            cors_origins=self.settings.public_cors_origins,
         )
         await self._health.start()
         self.tree.add_command(NewsCommands(self))
@@ -154,6 +167,10 @@ class BigBot(commands.Bot):
                     await self._scheduler
         if hasattr(self, "feed_service"):
             await self.feed_service.close()
+        for task in self._maintenance_tasks:
+            task.cancel()
+        if self._maintenance_tasks:
+            await asyncio.gather(*self._maintenance_tasks, return_exceptions=True)
         if self._health:
             await self._health.close()
         await self.database.close()
@@ -164,9 +181,41 @@ class BigBot(commands.Bot):
             self._scheduler = asyncio.create_task(
                 self.feed_service.run(), name="big-news-scheduler"
             )
+            self.schedule_presentation_refresh()
         log.info("Big is ready", extra={"event": "ready"})
         if self.user:
             log.info("Invite Big with %s", invite_url(self.user.id), extra={"event": "invite"})
+
+    def schedule_presentation_refresh(
+        self, *, forum_channel_id: int | None = None, force: bool = False
+    ) -> None:
+        async def maintain_stories() -> None:
+            await self.feed_service.refresh_presentation(
+                forum_channel_id=forum_channel_id,
+                force=force,
+            )
+            if forum_channel_id is None and not force:
+                await self.feed_service.recover_pending_stories()
+                await self.feed_service.recover_story_analysis()
+
+        task = asyncio.create_task(
+            maintain_stories(),
+            name="big-presentation-refresh",
+        )
+        self._maintenance_tasks.add(task)
+        task.add_done_callback(self._maintenance_finished)
+
+    def _maintenance_finished(self, task: asyncio.Task[object]) -> None:
+        self._maintenance_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error(
+                "background maintenance failed",
+                exc_info=(type(error), error, error.__traceback__),
+                extra={"event": "maintenance_failed", "task": task.get_name()},
+            )
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         sync_guild = self.settings.guild_id or self.settings.app_config.guild_id
@@ -210,6 +259,19 @@ class NewsCommands(app_commands.Group):
                 user_id=interaction.user.id,
                 guild_id=guild_id,
                 model=self.bot.feed_service.analysis_model(guild_id),
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="tags", description="Check or install the recommended forum tags")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def tags(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            view=TagSetupView(
+                bot=self.bot,
+                user_id=interaction.user.id,
+                guild_id=_guild_id(interaction),
             ),
             ephemeral=True,
         )
@@ -310,6 +372,185 @@ class OwnedLayoutView(discord.ui.LayoutView):
             )
             return False
         return True
+
+
+class TagSetupView(OwnedLayoutView):
+    def __init__(self, *, bot: BigBot, user_id: int, guild_id: int) -> None:
+        super().__init__(bot=bot, user_id=user_id, guild_id=guild_id)
+        container: discord.ui.Container[TagSetupView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(
+            discord.ui.TextDisplay(
+                _panel_text(
+                    "Forum Tags",
+                    (
+                        "Choose the Forum Channel used for news.",
+                        "Big will preserve existing tags and can add missing recommended tags.",
+                    ),
+                )
+            )
+        )
+        container.add_item(discord.ui.ActionRow(TagForumSelect()))
+        self.add_item(container)
+
+
+class TagForumSelect(discord.ui.ChannelSelect[TagSetupView]):
+    def __init__(self) -> None:
+        super().__init__(
+            channel_types=[discord.ChannelType.forum],
+            placeholder="Forum Channel",
+            min_values=1,
+            max_values=1,
+            custom_id="big:tags:forum",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        selected = self.values[0]
+        channel = parent.bot.get_channel(selected.id)
+        if channel is None and interaction.guild is not None:
+            try:
+                channel = await interaction.guild.fetch_channel(selected.id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                channel = None
+        if not isinstance(channel, discord.ForumChannel):
+            await _send_notice(interaction, "Forum Tags", ("Select a Forum Channel.",))
+            return
+        await interaction.response.edit_message(
+            view=TagAuditView(
+                bot=parent.bot,
+                user_id=parent.user_id,
+                guild_id=parent.guild_id,
+                forum=channel,
+            )
+        )
+
+
+class TagAuditView(OwnedLayoutView):
+    def __init__(
+        self,
+        *,
+        bot: BigBot,
+        user_id: int,
+        guild_id: int,
+        forum: discord.ForumChannel,
+        notice: str | None = None,
+    ) -> None:
+        super().__init__(bot=bot, user_id=user_id, guild_id=guild_id)
+        self.forum = forum
+        existing = {tag.name.casefold() for tag in forum.available_tags}
+        missing = tuple(tag for tag in TAG_CATALOG if tag.casefold() not in existing)
+        free_slots = max(0, 20 - len(forum.available_tags))
+        lines = [
+            f"Forum: {forum.mention}",
+            f"Recommended tags present: {len(TAG_CATALOG) - len(missing)}/{len(TAG_CATALOG)}",
+            f"Free tag slots: {free_slots}",
+        ]
+        if notice:
+            lines.insert(0, notice)
+        if missing:
+            lines.append(f"Missing: {', '.join(missing)}")
+        else:
+            lines.append("The complete tag set is installed.")
+        if len(missing) > free_slots:
+            lines.append("Remove unused forum tags before installing the missing set.")
+        container: discord.ui.Container[TagAuditView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(discord.ui.TextDisplay(_panel_text("Forum Tags", lines)))
+        container.add_item(
+            discord.ui.ActionRow(
+                InstallTagsButton(disabled=not missing or len(missing) > free_slots),
+                ChooseAnotherTagForumButton(),
+            )
+        )
+        self.add_item(container)
+
+
+class InstallTagsButton(discord.ui.Button[TagAuditView]):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(
+            label="Install missing tags",
+            style=discord.ButtonStyle.primary,
+            custom_id="big:tags:install",
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        forum = parent.forum
+        existing = {tag.name.casefold() for tag in forum.available_tags}
+        missing = tuple(tag for tag in TAG_CATALOG if tag.casefold() not in existing)
+        if len(forum.available_tags) + len(missing) > 20:
+            await interaction.response.edit_message(
+                view=TagAuditView(
+                    bot=parent.bot,
+                    user_id=parent.user_id,
+                    guild_id=parent.guild_id,
+                    forum=forum,
+                    notice="There are not enough free tag slots.",
+                )
+            )
+            return
+        try:
+            updated = await forum.edit(
+                available_tags=[
+                    *forum.available_tags,
+                    *(discord.ForumTag(name=name) for name in missing),
+                ],
+                reason=f"Big tag setup by {interaction.user.id}",
+            )
+        except discord.Forbidden:
+            await _send_notice(
+                interaction,
+                "Forum Tags",
+                ("Big needs Manage Channels in this forum to install tags.",),
+            )
+            return
+        except discord.HTTPException:
+            log.exception("forum tag installation failed", extra={"event": "tag_install_failed"})
+            await _send_notice(
+                interaction,
+                "Forum Tags",
+                ("Discord did not accept the tag update. Try again shortly.",),
+            )
+            return
+        await interaction.response.edit_message(
+            view=TagAuditView(
+                bot=parent.bot,
+                user_id=parent.user_id,
+                guild_id=parent.guild_id,
+                forum=updated or forum,
+                notice=f"Installed {len(missing)} tag{'s' if len(missing) != 1 else ''}.",
+            )
+        )
+        parent.bot.schedule_presentation_refresh(forum_channel_id=forum.id, force=True)
+
+
+class ChooseAnotherTagForumButton(discord.ui.Button[TagAuditView]):
+    def __init__(self) -> None:
+        super().__init__(
+            label="Choose another",
+            style=discord.ButtonStyle.secondary,
+            custom_id="big:tags:choose",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        await interaction.response.edit_message(
+            view=TagSetupView(
+                bot=parent.bot,
+                user_id=parent.user_id,
+                guild_id=parent.guild_id,
+            )
+        )
 
 
 class FeedDashboardView(OwnedLayoutView):

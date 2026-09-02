@@ -76,6 +76,7 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
         assert body["model"] == "deepseek/deepseek-v4-flash-0731"
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
+        assert body["reasoning"] == {"effort": "minimal", "exclude": True}
         supplied = json.loads(body["messages"][1]["content"])
         assert [item["publisher"] for item in supplied["articles"]] == ["Reuters", "AP"]
         assert set(supplied["articles"][0]) == {

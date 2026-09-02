@@ -96,5 +96,12 @@ def neutralize_mentions(value: str) -> str:
 
 
 def forum_title(value: str) -> str:
-    title = plain_text(value, limit=100).strip(" .")
+    with_breaks = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    lines = [line.strip() for line in with_breaks.splitlines() if line.strip()]
+    first = lines[0] if lines else value
+    has_bullet_continuation = any(re.match(r"^\s*(?:[-*•]|\d+[.)])\s+", line) for line in lines[1:])
+    if has_bullet_continuation and " - " in first:
+        first = first.split(" - ", 1)[0]
+    first = re.sub(r"^\s*(?:#{1,6}|[-*•]|\d+[.)])\s+", "", first)
+    title = plain_text(first, limit=100).strip(" .-|•")
     return title or "New feed item"

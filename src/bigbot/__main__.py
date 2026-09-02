@@ -18,6 +18,7 @@ from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
 from bigbot.health import HealthServer
 from bigbot.logging_config import configure_logging
+from bigbot.public_api import build_story_feed
 from bigbot.publisher import DryRunForumPublisher
 from bigbot.service import FeedService
 
@@ -94,7 +95,20 @@ async def _dry_run(settings: Settings) -> None:
             "stories": sum(stories.values()),
         }
 
-    health = HealthServer(settings.health_host, settings.health_port, status)
+    async def public_story_feed(limit: int) -> dict[str, object]:
+        return await build_story_feed(
+            database,
+            limit=limit,
+            public_site_url=settings.public_site_url,
+        )
+
+    health = HealthServer(
+        settings.health_host,
+        settings.health_port,
+        status,
+        story_feed_provider=public_story_feed,
+        cors_origins=settings.public_cors_origins,
+    )
     await health.start()
     scheduler = asyncio.create_task(service.run(), name="big-dry-run-scheduler")
     stopping = asyncio.Event()
