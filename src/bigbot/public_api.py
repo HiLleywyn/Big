@@ -42,9 +42,7 @@ async def build_story_feed(
     return {
         "version": 2,
         "generated_at": utc_now().isoformat(),
-        "total": await database.count_published_stories(
-            search=request.search, tags=request.tags
-        ),
+        "total": await database.count_published_stories(search=request.search, tags=request.tags),
         "has_more": has_more,
         "next_cursor": next_cursor,
         "tag_counts": await database.published_story_tag_counts(search=request.search),

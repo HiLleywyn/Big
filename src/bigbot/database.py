@@ -740,23 +740,20 @@ class Database:
             cursor_time, cursor_id = cursor
             timestamp = cursor_time.isoformat()
             conditions.append(
-                "(stories.last_updated_at < ? OR "
-                "(stories.last_updated_at = ? AND stories.id < ?))"
+                "(stories.last_updated_at < ? OR (stories.last_updated_at = ? AND stories.id < ?))"
             )
             parameters.extend((timestamp, timestamp, cursor_id))
         parameters.append(limit)
         query = f"""
             SELECT stories.* FROM stories
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY stories.last_updated_at DESC, stories.id DESC
             LIMIT ?
         """
         db_cursor = await self._db().execute(query, parameters)
         return [_story_from_row(row) async for row in db_cursor]
 
-    async def count_published_stories(
-        self, *, search: str = "", tags: tuple[str, ...] = ()
-    ) -> int:
+    async def count_published_stories(self, *, search: str = "", tags: tuple[str, ...] = ()) -> int:
         conditions, parameters = _published_story_filters(search=search, tags=tags)
         cursor = await self._db().execute(
             f"SELECT COUNT(*) AS count FROM stories WHERE {' AND '.join(conditions)}",
@@ -770,7 +767,7 @@ class Database:
         cursor = await self._db().execute(
             f"""
             SELECT stories.tags_json FROM stories
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             """,
             parameters,
         )
@@ -1493,9 +1490,7 @@ def _published_story_filters(
     parameters: list[object] = []
     cleaned_search = search.strip().lower()
     if cleaned_search:
-        escaped = (
-            cleaned_search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        )
+        escaped = cleaned_search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
         conditions.append(
             "(LOWER(stories.title) LIKE ? ESCAPE '\\' OR EXISTS ("

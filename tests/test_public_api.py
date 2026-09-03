@@ -80,9 +80,10 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     )
     assert detail is not None
     assert detail["story"] == result
-    assert await build_story_detail(
-        database, story_id=9999, public_site_url="https://bigif.org"
-    ) is None
+    assert (
+        await build_story_detail(database, story_id=9999, public_site_url="https://bigif.org")
+        is None
+    )
     await database.close()
 
 
