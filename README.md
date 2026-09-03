@@ -207,9 +207,12 @@ RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection pan
 step. `refresh` lets moderators refresh one feed or all feeds from the panel. `tags` checks the
 selected forum and can install the missing recommended tag names without deleting existing tags.
 
-Published stories are available to the website at `GET /api/v1/stories?limit=50`. The response
-contains only published story text, tags, source links, timestamps, and Discord thread links.
-Browser access is restricted by `BIG_PUBLIC_CORS_ORIGINS`.
+Published stories are available to the website at `GET /api/v1/stories?limit=15`. The list API
+supports an opaque `cursor`, a `q` search value, and repeated `tag` values. It returns the total,
+available tag counts, and the next cursor when more results exist. A single published story is
+available at `GET /api/v1/stories/{id}`. Responses contain only published story text, tags, source
+links, timestamps, and Discord thread links. Browser access is restricted by
+`BIG_PUBLIC_CORS_ORIGINS`.
 
 Story tools use short forms for IDs. `merge` moves the source cluster into the target and archives
 the old Discord thread. `split` moves one article into a fresh story and forum post. `reprocess`

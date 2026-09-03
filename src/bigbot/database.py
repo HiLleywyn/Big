@@ -693,6 +693,21 @@ class Database:
         row = await cursor.fetchone()
         return _story_from_row(row) if row is not None else None
 
+    async def get_published_story(self, story_id: int) -> Story | None:
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE id = ?
+              AND publication_state = 'published'
+              AND state != 'merged'
+              AND cleared_at IS NULL
+              AND discord_thread_id IS NOT NULL
+            """,
+            (story_id,),
+        )
+        row = await cursor.fetchone()
+        return _story_from_row(row) if row is not None else None
+
     async def published_stories(self, *, limit: int = 50) -> list[Story]:
         if not 1 <= limit <= 100:
             raise ValueError("story limit must be between 1 and 100")
@@ -709,6 +724,63 @@ class Database:
             (limit,),
         )
         return [_story_from_row(row) async for row in cursor]
+
+    async def browse_published_stories(
+        self,
+        *,
+        limit: int = 15,
+        cursor: tuple[datetime, int] | None = None,
+        search: str = "",
+        tags: tuple[str, ...] = (),
+    ) -> list[Story]:
+        if not 1 <= limit <= 51:
+            raise ValueError("story limit must be between 1 and 51")
+        conditions, parameters = _published_story_filters(search=search, tags=tags)
+        if cursor is not None:
+            cursor_time, cursor_id = cursor
+            timestamp = cursor_time.isoformat()
+            conditions.append(
+                "(stories.last_updated_at < ? OR "
+                "(stories.last_updated_at = ? AND stories.id < ?))"
+            )
+            parameters.extend((timestamp, timestamp, cursor_id))
+        parameters.append(limit)
+        query = f"""
+            SELECT stories.* FROM stories
+            WHERE {' AND '.join(conditions)}
+            ORDER BY stories.last_updated_at DESC, stories.id DESC
+            LIMIT ?
+        """
+        db_cursor = await self._db().execute(query, parameters)
+        return [_story_from_row(row) async for row in db_cursor]
+
+    async def count_published_stories(
+        self, *, search: str = "", tags: tuple[str, ...] = ()
+    ) -> int:
+        conditions, parameters = _published_story_filters(search=search, tags=tags)
+        cursor = await self._db().execute(
+            f"SELECT COUNT(*) AS count FROM stories WHERE {' AND '.join(conditions)}",
+            parameters,
+        )
+        row = await cursor.fetchone()
+        return int(row["count"] if row is not None else 0)
+
+    async def published_story_tag_counts(self, *, search: str = "") -> dict[str, int]:
+        conditions, parameters = _published_story_filters(search=search, tags=())
+        cursor = await self._db().execute(
+            f"""
+            SELECT stories.tags_json FROM stories
+            WHERE {' AND '.join(conditions)}
+            """,
+            parameters,
+        )
+        counts: dict[str, int] = {}
+        async for row in cursor:
+            for tag in json.loads(row["tags_json"]):
+                label = str(tag).strip()
+                if label:
+                    counts[label] = counts.get(label, 0) + 1
+        return counts
 
     async def published_stories_needing_analysis(self, *, limit: int = 100) -> list[Story]:
         if not 1 <= limit <= 500:
@@ -1407,6 +1479,40 @@ class Database:
             (guild_id, model, actor_id, utc_now().isoformat()),
         )
         await self._db().commit()
+
+
+def _published_story_filters(
+    *, search: str, tags: tuple[str, ...]
+) -> tuple[list[str], list[object]]:
+    conditions = [
+        "stories.publication_state = 'published'",
+        "stories.state != 'merged'",
+        "stories.cleared_at IS NULL",
+        "stories.discord_thread_id IS NOT NULL",
+    ]
+    parameters: list[object] = []
+    cleaned_search = search.strip().lower()
+    if cleaned_search:
+        escaped = (
+            cleaned_search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        pattern = f"%{escaped}%"
+        conditions.append(
+            "(LOWER(stories.title) LIKE ? ESCAPE '\\' OR EXISTS ("
+            "SELECT 1 FROM articles AS search_articles "
+            "WHERE search_articles.story_id = stories.id "
+            "AND LOWER(search_articles.publisher) LIKE ? ESCAPE '\\'))"
+        )
+        parameters.extend((pattern, pattern))
+    cleaned_tags = tuple(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+    if cleaned_tags:
+        placeholders = ", ".join("?" for _ in cleaned_tags)
+        conditions.append(
+            "EXISTS (SELECT 1 FROM json_each(stories.tags_json) AS story_tag "
+            f"WHERE story_tag.value IN ({placeholders}))"
+        )
+        parameters.extend(cleaned_tags)
+    return conditions, parameters
 
 
 def _feed_from_row(row: aiosqlite.Row) -> Feed:

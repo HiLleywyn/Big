@@ -18,7 +18,7 @@ from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
 from bigbot.health import HealthServer
 from bigbot.logging_config import configure_logging
-from bigbot.public_api import build_story_feed
+from bigbot.public_api import StoryFeedQuery, build_story_detail, build_story_feed
 from bigbot.publisher import DryRunForumPublisher
 from bigbot.service import FeedService
 
@@ -95,10 +95,17 @@ async def _dry_run(settings: Settings) -> None:
             "stories": sum(stories.values()),
         }
 
-    async def public_story_feed(limit: int) -> dict[str, object]:
+    async def public_story_feed(query: StoryFeedQuery) -> dict[str, object]:
         return await build_story_feed(
             database,
-            limit=limit,
+            query=query,
+            public_site_url=settings.public_site_url,
+        )
+
+    async def public_story_detail(story_id: int) -> dict[str, object] | None:
+        return await build_story_detail(
+            database,
+            story_id=story_id,
             public_site_url=settings.public_site_url,
         )
 
@@ -107,6 +114,7 @@ async def _dry_run(settings: Settings) -> None:
         settings.health_port,
         status,
         story_feed_provider=public_story_feed,
+        story_detail_provider=public_story_detail,
         cors_origins=settings.public_cors_origins,
     )
     await health.start()
