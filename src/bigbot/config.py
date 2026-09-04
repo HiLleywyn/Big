@@ -73,6 +73,7 @@ class Settings:
     max_backfill: int
     http_timeout_seconds: int
     rss_max_bytes: int
+    article_max_bytes: int
     log_level: str
     config_path: Path
     app_config: AppConfig
@@ -95,6 +96,8 @@ class Settings:
             raise ConfigurationError("BIG_HTTP_TIMEOUT_SECONDS must be between 3 and 120")
         if not 65536 <= self.rss_max_bytes <= 10 * 1024 * 1024:
             raise ConfigurationError("BIG_RSS_MAX_BYTES must be between 64 KiB and 10 MiB")
+        if not 65536 <= self.article_max_bytes <= 20 * 1024 * 1024:
+            raise ConfigurationError("BIG_ARTICLE_MAX_BYTES must be between 64 KiB and 20 MiB")
         if self.log_level not in logging.getLevelNamesMapping():
             raise ConfigurationError("BIG_LOG_LEVEL is invalid")
         if not self.openrouter_model or len(self.openrouter_model) > 200:
@@ -330,6 +333,7 @@ def load_settings(*, require_discord: bool = False) -> Settings:
         max_backfill=_integer("BIG_MAX_BACKFILL", "3"),
         http_timeout_seconds=_integer("BIG_HTTP_TIMEOUT_SECONDS", "15"),
         rss_max_bytes=_integer("BIG_RSS_MAX_BYTES", "2097152"),
+        article_max_bytes=_integer("BIG_ARTICLE_MAX_BYTES", "4194304"),
         log_level=os.getenv("BIG_LOG_LEVEL", "INFO").strip().upper(),
         config_path=config_path,
         app_config=app_config,

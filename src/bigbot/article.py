@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from bigbot.security import (
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\[\]{}\"']+", re.IGNORECASE)
 TRAILING_URL_PUNCTUATION = ".,;:!?)]}"
+log = logging.getLogger(__name__)
 
 
 class ArticleExtractionError(RuntimeError):
@@ -93,18 +95,27 @@ class ArticleExtractor:
                         and "application/xhtml+xml" not in content_type
                     ):
                         raise ArticleExtractionError("The selected link is not an HTML article.")
-                    length = candidate.headers.get("content-length")
-                    if length and int(length) > self._max_bytes:
-                        raise ArticleExtractionError("The article is too large to process safely.")
                     chunks = bytearray()
+                    truncated = False
                     async for chunk in candidate.aiter_bytes():
-                        chunks.extend(chunk)
-                        if len(chunks) > self._max_bytes:
-                            raise ArticleExtractionError(
-                                "The article is too large to process safely."
-                            )
+                        remaining = self._max_bytes - len(chunks)
+                        if remaining <= 0:
+                            truncated = True
+                            break
+                        chunks.extend(chunk[:remaining])
+                        if len(chunk) > remaining or len(chunks) == self._max_bytes:
+                            truncated = True
+                            break
                     body = bytes(chunks)
                     response = candidate
+                    if truncated:
+                        log.info(
+                            "article HTML truncated after metadata window",
+                            extra={
+                                "event": "article_html_truncated",
+                                "max_bytes": self._max_bytes,
+                            },
+                        )
                     break
             except ArticleExtractionError:
                 raise

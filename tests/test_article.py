@@ -98,6 +98,34 @@ async def test_article_extractor_rejects_non_html_content() -> None:
     await client.aclose()
 
 
+async def test_article_extractor_uses_bounded_prefix_for_large_pages() -> None:
+    head = (
+        '<html><head><meta property="og:title" content="A large but valid article">'
+        '<meta property="og:description" content="The useful metadata appears first.">'
+        '<meta property="og:site_name" content="Large News"></head><body>'
+    )
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/html", "content-length": "50000000"},
+            content=(head + ("x" * 20_000) + "</body></html>").encode(),
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    extractor = ArticleExtractor(
+        timeout_seconds=10,
+        max_bytes=1_024,
+        resolver=_public_resolver,
+        client=client,
+    )
+    item = await extractor.fetch("https://news.example/large-story")
+    assert item.title == "A large but valid article"
+    assert item.summary == "The useful metadata appears first."
+    assert item.publisher == "Large News"
+    await client.aclose()
+
+
 def test_article_result_is_components_v2_with_story_links() -> None:
     now = utc_now()
     story = Story(

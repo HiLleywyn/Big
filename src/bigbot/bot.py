@@ -116,7 +116,7 @@ class BigBot(commands.Bot):
         )
         self.article_extractor = ArticleExtractor(
             timeout_seconds=self.settings.http_timeout_seconds,
-            max_bytes=self.settings.rss_max_bytes,
+            max_bytes=self.settings.article_max_bytes,
         )
 
         async def health_status() -> dict[str, object]:

@@ -84,6 +84,7 @@ BIG_CONFIG_PATH     Path to config.yaml, default config.yaml
 BIG_GUILD_ID        Optional dev guild for fast slash-command sync
 BIG_DATABASE_PATH   SQLite path, default data/big.db
 BIG_HEALTH_PORT     Local health port, default 8787
+BIG_ARTICLE_MAX_BYTES Maximum HTML prefix read for message article analysis, default 4194304
 X_BEARER_TOKEN      Only required for official X feeds
 OPENROUTER_API_KEY  Optional, enables story-level OpenRouter analysis
 BIG_OPENROUTER_MODEL OpenRouter model, default deepseek/deepseek-v4-flash-0731
