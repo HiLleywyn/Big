@@ -249,8 +249,7 @@ class OpenRouterEnricher:
         }
         message = await self._completion(payload)
         try:
-            content = message["content"]
-            parsed = json.loads(content)
+            parsed = _decode_json_content(message["content"])
         except (
             json.JSONDecodeError,
             ValueError,
@@ -452,7 +451,7 @@ class OpenRouterEnricher:
         }
         message = await self._completion(payload)
         try:
-            parsed = json.loads(message["content"])
+            parsed = _decode_json_content(message["content"])
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             raise EnrichmentError("OpenRouter returned an invalid fact-check response") from exc
         return _validate_fact_check(parsed, allowed_links, max_claims=claim_limit)
@@ -606,6 +605,17 @@ def _openrouter_error(response: httpx2.Response) -> str:
     if not isinstance(message, str) or not message.strip():
         return "request rejected"
     return re.sub(r"\s+", " ", message).strip()[:300]
+
+
+def _decode_json_content(content: object) -> object:
+    """Decode strict JSON while tolerating a provider's occasional code fence."""
+    if not isinstance(content, str):
+        raise TypeError("structured content must be text")
+    value = content.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", value, flags=re.DOTALL | re.IGNORECASE)
+    if fenced is not None:
+        value = fenced.group(1).strip()
+    return json.loads(value)
 
 
 def _article_input(article: Article) -> dict[str, object]:

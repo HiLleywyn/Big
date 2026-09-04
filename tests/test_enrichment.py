@@ -510,6 +510,43 @@ async def test_headline_only_story_researches_then_builds_grounded_summary() -> 
     await client.aclose()
 
 
+async def test_story_summary_accepts_provider_json_code_fence() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        content = json.dumps(
+            {
+                "summary": "Officials confirmed the allocation at Thursday's event.",
+                "key_facts": [],
+                "useful_context": [],
+                "unclear_or_disputed": [],
+                "related_story_ids": [],
+                "latest_update": None,
+            }
+        )
+        return httpx2.Response(
+            200,
+            json={"choices": [{"message": {"content": f"```json\n{content}\n```"}}]},
+        )
+
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=False,
+        zdr=True,
+        timeout_seconds=10,
+        client=client,
+    )
+
+    result = await enricher.analyze_story(story(1), [article(1, "Reuters")], [])
+
+    assert "Officials confirmed the allocation" in result.text
+    await client.aclose()
+
+
 async def test_model_override_is_validated_and_applied_per_guild() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
