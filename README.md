@@ -227,7 +227,7 @@ Right-click any Discord message containing an HTTPS article link, choose **Apps*
 **Analyze Article**. Big reads links from the message and its embeds. One link runs immediately.
 Several links open a Components V2 picker. The selected page is converted into the same
 `FeedItem` used by RSS and X, then passed to `FeedService.process_item`. Existing clusters,
-deduplication, all-source analysis, Forum publishing, and reciprocal story links therefore behave
+deduplication, all-source summaries, Forum publishing, and reciprocal story links therefore behave
 the same way for scheduled and member-submitted articles. The result is posted as a Components V2
 reply to the selected message.
 
@@ -236,7 +236,11 @@ verifiable claims. Big ignores opinions, rhetoric, jokes, and predictions. It pe
 research through the existing OpenRouter client, prefers primary and official evidence, validates
 every returned citation against the search results, and replies with a compact Components V2 card.
 Each claim receives one of: `True`, `Mostly True`, `Misleading`, `False`, `Unsupported`, or
-`Unclear`. Fact checking requires `OPENROUTER_API_KEY` and `BIG_AI_WEB_SEARCH=true`.
+`Unclear`. For short follow-up messages, Big reads up to four immediately preceding messages from
+the same author within ten minutes. Those messages resolve references such as "it" or "that" but
+are never treated as additional claims. A single question receives one verdict, and each complete
+explanation is rendered in its own Components V2 text section. Fact checking requires
+`OPENROUTER_API_KEY` and `BIG_AI_WEB_SEARCH=true`.
 
 Published stories are available to the website at `GET /api/v1/stories?limit=15`. The list API
 supports an opaque `cursor`, a `q` search value, and repeated `tag` values. It returns the total,

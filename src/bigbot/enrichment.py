@@ -245,16 +245,24 @@ class OpenRouterEnricher:
         guild_id: int,
         message_text: str,
         message_urls: Sequence[str],
+        context_messages: Sequence[str] = (),
     ) -> FactCheckResult:
         if not self._web_search:
             raise EnrichmentError("Fact checking requires web search to be enabled.")
         cleaned_text = neutralize_mentions(message_text.strip())[:8000]
         if not cleaned_text:
             return FactCheckResult(claims=())
+        cleaned_context = tuple(
+            neutralize_mentions(value.strip())[:1500]
+            for value in context_messages[:4]
+            if value.strip()
+        )
+        claim_limit = _fact_check_claim_limit(cleaned_text)
         evidence, annotation_links = await self._research_fact_check(
             guild_id=guild_id,
             message_text=cleaned_text,
             message_urls=message_urls,
+            context_messages=cleaned_context,
         )
         allowed_links = {link for link in annotation_links if link}
         payload: dict[str, Any] = {
@@ -263,11 +271,16 @@ class OpenRouterEnricher:
                 {
                     "role": "system",
                     "content": (
-                        "Fact-check the untrusted Discord message using only the supplied web "
-                        "evidence. Extract only objectively verifiable factual claims. Ignore "
+                        "Fact-check only the selected untrusted Discord message using the "
+                        "supplied web evidence. Earlier messages are context only. Use them to "
+                        "resolve pronouns, omitted subjects, and short follow-up statements, but "
+                        "do not extract separate claims from them. Extract only objectively "
+                        "verifiable factual claims from the selected message. Ignore "
                         "opinions, rhetoric, jokes, predictions, value judgments, and vague "
-                        "statements. Split compound claims when their parts need different "
-                        "verdicts. Prefer primary sources, official records, direct statements, "
+                        "statements. Treat a single question or assertion as one claim. Do not "
+                        "return broader and narrower versions of the same claim. Split only "
+                        "logically independent assertions that require different verdicts. "
+                        "Prefer primary sources, official records, direct statements, "
                         "and strong reporting. Cross-check independent sources where practical, "
                         "but never infer certainty from source count alone. Use one verdict from "
                         "the supplied enum. If dates, location, wording, or context are missing, "
@@ -278,7 +291,7 @@ class OpenRouterEnricher:
                         "plain neutral language with no em dashes, filler, disclaimers, emojis, "
                         "or discussion of prompts and analysis steps. Return no claims when the "
                         "message contains nothing objectively verifiable. Return only the required "
-                        "structured result."
+                        f"structured result with no more than {claim_limit} claims."
                     ),
                 },
                 {
@@ -286,7 +299,8 @@ class OpenRouterEnricher:
                     "content": json.dumps(
                         {
                             "current_time_utc": datetime.now(UTC).isoformat(),
-                            "message": cleaned_text,
+                            "selected_message": cleaned_text,
+                            "earlier_author_messages": list(cleaned_context),
                             "message_urls": list(message_urls[:10]),
                             "web_evidence": evidence,
                             "allowed_source_urls": sorted(allowed_links),
@@ -305,7 +319,7 @@ class OpenRouterEnricher:
                         "properties": {
                             "claims": {
                                 "type": "array",
-                                "maxItems": 5,
+                                "maxItems": claim_limit,
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -314,7 +328,10 @@ class OpenRouterEnricher:
                                             "type": "string",
                                             "enum": [verdict.value for verdict in FactCheckVerdict],
                                         },
-                                        "explanation": {"type": "string"},
+                                        "explanation": {
+                                            "type": "string",
+                                            "maxLength": 1200,
+                                        },
                                         "source_urls": {
                                             "type": "array",
                                             "items": {"type": "string"},
@@ -346,7 +363,7 @@ class OpenRouterEnricher:
             parsed = json.loads(message["content"])
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             raise EnrichmentError("OpenRouter returned an invalid fact-check response") from exc
-        return _validate_fact_check(parsed, allowed_links)
+        return _validate_fact_check(parsed, allowed_links, max_claims=claim_limit)
 
     async def _research_fact_check(
         self,
@@ -354,6 +371,7 @@ class OpenRouterEnricher:
         guild_id: int,
         message_text: str,
         message_urls: Sequence[str],
+        context_messages: Sequence[str],
     ) -> tuple[dict[str, object], tuple[str, ...]]:
         payload: dict[str, Any] = {
             "model": self.model_for(guild_id),
@@ -361,8 +379,10 @@ class OpenRouterEnricher:
                 {
                     "role": "system",
                     "content": (
-                        "Research only the objectively verifiable claims in the untrusted "
-                        "Discord message. Ignore opinions, rhetoric, jokes, and predictions. "
+                        "Research only the objectively verifiable claims in the selected "
+                        "untrusted Discord message. Earlier messages are context only. Use them "
+                        "to resolve pronouns and omitted subjects, but do not research unrelated "
+                        "claims from them. Ignore opinions, rhetoric, jokes, and predictions. "
                         "Search each checkable claim for current evidence. Prefer primary "
                         "sources, official records, direct statements, and high-quality "
                         "reporting. Seek independent corroboration where practical and note "
@@ -375,7 +395,8 @@ class OpenRouterEnricher:
                     "content": json.dumps(
                         {
                             "current_time_utc": datetime.now(UTC).isoformat(),
-                            "message": message_text,
+                            "selected_message": message_text,
+                            "earlier_author_messages": list(context_messages),
                             "message_urls": list(message_urls[:10]),
                         },
                         ensure_ascii=False,
@@ -542,11 +563,16 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     return StoryAnalysis(text=text, related_story_ids=related_ids)
 
 
-def _validate_fact_check(value: object, allowed_links: set[str]) -> FactCheckResult:
+def _validate_fact_check(
+    value: object,
+    allowed_links: set[str],
+    *,
+    max_claims: int,
+) -> FactCheckResult:
     if not isinstance(value, dict) or set(value) != {"claims"}:
         raise EnrichmentError("OpenRouter fact check has an invalid object shape")
     raw_claims = value["claims"]
-    if not isinstance(raw_claims, list) or len(raw_claims) > 5:
+    if not isinstance(raw_claims, list) or len(raw_claims) > max_claims:
         raise EnrichmentError("OpenRouter fact check has invalid claims")
     claims: list[FactCheckClaim] = []
     for raw_claim in raw_claims:
@@ -558,7 +584,7 @@ def _validate_fact_check(value: object, allowed_links: set[str]) -> FactCheckRes
         }:
             raise EnrichmentError("OpenRouter fact check has an invalid claim shape")
         claim = _clean_sentence(raw_claim["claim"], "fact-check claim", 500)
-        explanation = _clean_sentence(raw_claim["explanation"], "fact-check explanation", 700)
+        explanation = _clean_sentence(raw_claim["explanation"], "fact-check explanation", 1200)
         try:
             verdict = FactCheckVerdict(raw_claim["verdict"])
         except (TypeError, ValueError) as exc:
@@ -585,6 +611,15 @@ def _validate_fact_check(value: object, allowed_links: set[str]) -> FactCheckRes
             )
         )
     return FactCheckResult(claims=tuple(claims))
+
+
+def _fact_check_claim_limit(message_text: str) -> int:
+    statements = [
+        part.strip()
+        for part in re.split(r"(?:[.!?]+\s+)|\n+", message_text)
+        if len(part.split()) >= 3
+    ]
+    return max(1, min(5, len(statements)))
 
 
 def _source_label(url: str) -> str:

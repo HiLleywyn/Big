@@ -273,7 +273,14 @@ class BigBot(commands.Bot):
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await _fact_check_message(self, interaction, message, message_text)
+        context_messages = await _recent_author_context(message)
+        await _fact_check_message(
+            self,
+            interaction,
+            message,
+            message_text,
+            context_messages=context_messages,
+        )
 
     async def on_ready(self) -> None:
         if self._scheduler is None:
@@ -552,7 +559,16 @@ class FactCheckResultView(discord.ui.LayoutView):
         container: discord.ui.Container[FactCheckResultView] = discord.ui.Container(
             accent_color=ADMIN_COLOR
         )
-        container.add_item(discord.ui.TextDisplay(_fact_check_result_text(result)))
+        container.add_item(discord.ui.TextDisplay("## Fact Check"))
+        if not result.claims:
+            container.add_item(
+                discord.ui.TextDisplay(
+                    "No objectively verifiable factual claim was found in this message."
+                )
+            )
+        for index, claim in enumerate(result.claims, 1):
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(_fact_check_claim_text(index, claim)))
         self.add_item(container)
 
 
@@ -1639,6 +1655,35 @@ def _message_fact_check_text(message: discord.Message) -> str:
     return "\n".join(value.strip() for value in values if value.strip())[:8000]
 
 
+async def _recent_author_context(message: discord.Message) -> tuple[str, ...]:
+    context: list[str] = []
+    characters = 0
+    try:
+        async for candidate in message.channel.history(limit=12, before=message):
+            if candidate.author.id != message.author.id:
+                break
+            age_seconds = (message.created_at - candidate.created_at).total_seconds()
+            if age_seconds < 0 or age_seconds > 600:
+                break
+            text = _message_fact_check_text(candidate)
+            if not text:
+                break
+            if characters + len(text) > 4000:
+                break
+            context.append(text)
+            characters += len(text)
+            if len(context) == 4:
+                break
+    except (discord.Forbidden, discord.HTTPException):
+        log.info(
+            "fact-check context unavailable",
+            extra={"event": "fact_check_context_unavailable", "message_id": message.id},
+        )
+        return ()
+    context.reverse()
+    return tuple(context)
+
+
 def _message_text_values(message: discord.Message, *, include_embed_urls: bool) -> list[str]:
     values: list[str] = [message.content]
     for embed in message.embeds:
@@ -1661,6 +1706,8 @@ async def _fact_check_message(
     interaction: discord.Interaction,
     message: discord.Message,
     message_text: str,
+    *,
+    context_messages: Sequence[str] = (),
 ) -> None:
     if bot.enricher is None or interaction.guild_id is None:
         await interaction.edit_original_response(
@@ -1671,7 +1718,8 @@ async def _fact_check_message(
         result = await bot.enricher.fact_check(
             guild_id=interaction.guild_id,
             message_text=message_text,
-            message_urls=extract_article_urls((message_text,)),
+            message_urls=extract_article_urls((message_text, *context_messages)),
+            context_messages=context_messages,
         )
         await message.reply(
             view=FactCheckResultView(result),
@@ -1694,6 +1742,7 @@ async def _fact_check_message(
                 "user_id": interaction.user.id,
                 "message_id": message.id,
                 "claim_count": checked,
+                "context_message_count": len(context_messages),
             },
         )
     except EnrichmentError as exc:
@@ -1728,8 +1777,8 @@ async def _fact_check_message(
 def _fact_check_claim_text(index: int, claim: FactCheckClaim) -> str:
     sections = [
         f"### {index}. {claim.verdict.value}",
-        f"**Claim:** {plain_text(claim.claim, limit=280)}",
-        plain_text(claim.explanation, limit=420),
+        f"**Claim:** {plain_text(claim.claim, limit=500)}",
+        plain_text(claim.explanation, limit=1200),
     ]
     if claim.sources:
         links: list[str] = []
@@ -1745,14 +1794,6 @@ def _fact_check_claim_text(index: int, claim: FactCheckClaim) -> str:
     else:
         sections.append("**Evidence:** No reliable source established or refuted this claim.")
     return "\n\n".join(sections)
-
-
-def _fact_check_result_text(result: FactCheckResult) -> str:
-    if not result.claims:
-        return "## Fact Check\n\nNo objectively verifiable factual claim was found in this message."
-    claims = [_fact_check_claim_text(index, claim) for index, claim in enumerate(result.claims, 1)]
-    text = "## Fact Check\n\n" + "\n\n".join(claims)
-    return text if len(text) <= 3900 else text[:3897].rstrip() + "..."
 
 
 async def _analyze_message_article(

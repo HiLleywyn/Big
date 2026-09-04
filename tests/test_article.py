@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import ipaddress
+from datetime import timedelta
+from types import SimpleNamespace
 
 import discord
 import httpx2
 import pytest
 
 from bigbot.article import ArticleExtractionError, ArticleExtractor, extract_article_urls
-from bigbot.bot import ArticleResultView, FactCheckResultView
+from bigbot.bot import ArticleResultView, FactCheckResultView, _recent_author_context
 from bigbot.domain import (
     AnalysisState,
     Article,
@@ -222,3 +224,62 @@ def test_fact_check_result_is_compact_components_v2() -> None:
     assert "True" in rendered
     assert "The measure rose 3 percent." in rendered
     assert "https://agency.example/release" in rendered
+
+
+def test_fact_check_result_does_not_cut_off_explanation() -> None:
+    explanation = "The complete explanation remains visible. " + ("evidence " * 80) + "END"
+    view = FactCheckResultView(
+        FactCheckResult(
+            claims=(
+                FactCheckClaim(
+                    claim="A claim with a detailed result.",
+                    verdict=FactCheckVerdict.UNCLEAR,
+                    explanation=explanation,
+                    sources=(),
+                ),
+            )
+        )
+    )
+    container = view.children[0]
+    assert isinstance(container, discord.ui.Container)
+    rendered = str(container.to_component_dict())
+    assert "END" in rendered
+    assert explanation in rendered
+
+
+async def test_fact_check_context_uses_consecutive_messages_from_selected_author() -> None:
+    now = utc_now()
+    author = SimpleNamespace(id=11)
+    other = SimpleNamespace(id=12)
+
+    def message(message_id: int, text: str, owner: object, seconds: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=message_id,
+            content=text,
+            embeds=[],
+            author=owner,
+            created_at=now - timedelta(seconds=seconds),
+        )
+
+    history = [
+        message(3, "X is funny.", author, 10),
+        message(2, "Why do you think X?", author, 20),
+        message(1, "A different user replied.", other, 30),
+        message(0, "This is too old in the conversation.", author, 40),
+    ]
+
+    class Channel:
+        def history(self, **_kwargs: object):
+            async def iterate():
+                for item in history:
+                    yield item
+
+            return iterate()
+
+    selected = message(4, "It was. That is a fact.", author, 0)
+    selected.channel = Channel()
+
+    assert await _recent_author_context(selected) == (
+        "Why do you think X?",
+        "X is funny.",
+    )

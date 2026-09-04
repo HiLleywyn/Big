@@ -142,6 +142,11 @@ async def test_fact_check_researches_claims_and_validates_evidence_links() -> No
         if "tools" in body:
             assert body["tools"][0]["type"] == "openrouter:web_search"
             assert body["max_tool_calls"] == 5
+            supplied = json.loads(body["messages"][1]["content"])
+            assert supplied["selected_message"] == (
+                "The measure rose 3 percent. Best result ever!"
+            )
+            assert supplied["earlier_author_messages"] == ["The monthly release is out."]
             return httpx2.Response(
                 200,
                 json={
@@ -173,7 +178,8 @@ async def test_fact_check_researches_claims_and_validates_evidence_links() -> No
                 },
             )
         supplied = json.loads(body["messages"][1]["content"])
-        assert supplied["message"] == "The measure rose 3 percent. Best result ever!"
+        assert supplied["selected_message"] == "The measure rose 3 percent. Best result ever!"
+        assert supplied["earlier_author_messages"] == ["The monthly release is out."]
         assert supplied["allowed_source_urls"] == [
             "https://agency.example/release",
             "https://wire.example/report",
@@ -222,6 +228,7 @@ async def test_fact_check_researches_claims_and_validates_evidence_links() -> No
         guild_id=1,
         message_text="The measure rose 3 percent. Best result ever!",
         message_urls=(),
+        context_messages=("The monthly release is out.",),
     )
     assert len(requests) == 2
     assert len(result.claims) == 1
@@ -292,6 +299,69 @@ async def test_fact_check_rejects_source_not_returned_by_search() -> None:
             message_text="A factual claim.",
             message_urls=(),
         )
+    await client.aclose()
+
+
+async def test_single_question_allows_only_one_fact_check_verdict() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if "tools" in body:
+            return httpx2.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "A dictionary records the term's history.",
+                                "annotations": [],
+                            }
+                        }
+                    ]
+                },
+            )
+        schema = body["response_format"]["json_schema"]["schema"]
+        assert schema["properties"]["claims"]["maxItems"] == 1
+        assert "Earlier messages are context only" in body["messages"][0]["content"]
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "claims": [
+                                        {
+                                            "claim": "The term was coined by white people.",
+                                            "verdict": "Unclear",
+                                            "explanation": "The available evidence is incomplete.",
+                                            "source_urls": [],
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="deepseek/deepseek-v4-flash-0731",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+    result = await enricher.fact_check(
+        guild_id=1,
+        message_text="Was the term coined by white people?",
+        message_urls=(),
+        context_messages=("We were discussing the history of the term.",),
+    )
+    assert len(result.claims) == 1
     await client.aclose()
 
 
