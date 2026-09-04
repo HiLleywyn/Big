@@ -35,6 +35,7 @@ sources, updates, and discussion
 - Fails closed when a Discord write may have succeeded but cannot be confirmed.
 - Exposes health, readiness, and a read-only public story feed on port `8787`.
 - Adds an `Analyze Article` message command under Apps for member-submitted coverage.
+- Adds a source-driven `Fact Check` message command under Apps.
 
 The deterministic clustering engine is the default and needs no paid AI service. It is behind
 a small interface so a local embedding strategy can be added later without coupling feed
@@ -216,6 +217,13 @@ Several links open a Components V2 picker. The selected page is converted into t
 deduplication, all-source analysis, Forum publishing, and reciprocal story links therefore behave
 the same way for scheduled and member-submitted articles. The result is posted as a Components V2
 reply to the selected message.
+
+Right-click a Discord message and choose **Apps**, then **Fact Check** to check its objectively
+verifiable claims. Big ignores opinions, rhetoric, jokes, and predictions. It performs bounded web
+research through the existing OpenRouter client, prefers primary and official evidence, validates
+every returned citation against the search results, and replies with a compact Components V2 card.
+Each claim receives one of: `True`, `Mostly True`, `Misleading`, `False`, `Unsupported`, or
+`Unclear`. Fact checking requires `OPENROUTER_API_KEY` and `BIG_AI_WEB_SEARCH=true`.
 
 Published stories are available to the website at `GET /api/v1/stories?limit=15`. The list API
 supports an opaque `cursor`, a `q` search value, and repeated `tag` values. It returns the total,

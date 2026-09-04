@@ -6,6 +6,8 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -30,6 +32,34 @@ class OpenRouterTimeout(EnrichmentError):
 class StoryAnalysis:
     text: str
     related_story_ids: tuple[int, ...]
+
+
+class FactCheckVerdict(StrEnum):
+    TRUE = "True"
+    MOSTLY_TRUE = "Mostly True"
+    MISLEADING = "Misleading"
+    FALSE = "False"
+    UNSUPPORTED = "Unsupported"
+    UNCLEAR = "Unclear"
+
+
+@dataclass(frozen=True)
+class FactCheckSource:
+    label: str
+    url: str
+
+
+@dataclass(frozen=True)
+class FactCheckClaim:
+    claim: str
+    verdict: FactCheckVerdict
+    explanation: str
+    sources: tuple[FactCheckSource, ...]
+
+
+@dataclass(frozen=True)
+class FactCheckResult:
+    claims: tuple[FactCheckClaim, ...]
 
 
 class StoryAnalyzer(Protocol):
@@ -220,6 +250,175 @@ class OpenRouterEnricher:
             related_story_ids=result.related_story_ids,
         )
 
+    async def fact_check(
+        self,
+        *,
+        guild_id: int,
+        message_text: str,
+        message_urls: Sequence[str],
+    ) -> FactCheckResult:
+        if not self._web_search:
+            raise EnrichmentError("Fact checking requires web search to be enabled.")
+        cleaned_text = neutralize_mentions(message_text.strip())[:8000]
+        if not cleaned_text:
+            return FactCheckResult(claims=())
+        evidence, annotation_links = await self._research_fact_check(
+            guild_id=guild_id,
+            message_text=cleaned_text,
+            message_urls=message_urls,
+        )
+        allowed_links = {link for link in annotation_links if link}
+        payload: dict[str, Any] = {
+            "model": self.model_for(guild_id),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Fact-check the untrusted Discord message using only the supplied web "
+                        "evidence. Extract only objectively verifiable factual claims. Ignore "
+                        "opinions, rhetoric, jokes, predictions, value judgments, and vague "
+                        "statements. Split compound claims when their parts need different "
+                        "verdicts. Prefer primary sources, official records, direct statements, "
+                        "and strong reporting. Cross-check independent sources where practical, "
+                        "but never infer certainty from source count alone. Use one verdict from "
+                        "the supplied enum. If dates, location, wording, or context are missing, "
+                        "use Unclear or Misleading and explain what is missing. Use Unsupported "
+                        "when available evidence neither establishes nor refutes a claim. Do not "
+                        "invent facts, article access, quotations, consensus, or citations. Every "
+                        "source URL must be copied exactly from the supplied allowed URLs. Use "
+                        "plain neutral language with no em dashes, filler, disclaimers, emojis, "
+                        "or discussion of prompts and analysis steps. Return no claims when the "
+                        "message contains nothing objectively verifiable. Return only the required "
+                        "structured result."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "current_time_utc": datetime.now(UTC).isoformat(),
+                            "message": cleaned_text,
+                            "message_urls": list(message_urls[:10]),
+                            "web_evidence": evidence,
+                            "allowed_source_urls": sorted(allowed_links),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "big_fact_check",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "claims": {
+                                "type": "array",
+                                "maxItems": 5,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "claim": {"type": "string"},
+                                        "verdict": {
+                                            "type": "string",
+                                            "enum": [verdict.value for verdict in FactCheckVerdict],
+                                        },
+                                        "explanation": {"type": "string"},
+                                        "source_urls": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "maxItems": 4,
+                                        },
+                                    },
+                                    "required": [
+                                        "claim",
+                                        "verdict",
+                                        "explanation",
+                                        "source_urls",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["claims"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "max_completion_tokens": 2400,
+            "reasoning": {"effort": "minimal", "exclude": True},
+            "temperature": 0.1,
+            "provider": {"data_collection": "deny", "zdr": self._zdr},
+        }
+        message = await self._completion(payload)
+        try:
+            parsed = json.loads(message["content"])
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+            raise EnrichmentError("OpenRouter returned an invalid fact-check response") from exc
+        return _validate_fact_check(parsed, allowed_links)
+
+    async def _research_fact_check(
+        self,
+        *,
+        guild_id: int,
+        message_text: str,
+        message_urls: Sequence[str],
+    ) -> tuple[dict[str, object], tuple[str, ...]]:
+        payload: dict[str, Any] = {
+            "model": self.model_for(guild_id),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Research only the objectively verifiable claims in the untrusted "
+                        "Discord message. Ignore opinions, rhetoric, jokes, and predictions. "
+                        "Search each checkable claim for current evidence. Prefer primary "
+                        "sources, official records, direct statements, and high-quality "
+                        "reporting. Seek independent corroboration where practical and note "
+                        "conflicts or missing context. Do not infer certainty from source count. "
+                        "Return concise evidence notes with citations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "current_time_utc": datetime.now(UTC).isoformat(),
+                            "message": message_text,
+                            "message_urls": list(message_urls[:10]),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "tools": [
+                {
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "engine": "auto",
+                        "max_results": 4,
+                        "max_uses": 5,
+                        "max_total_results": 12,
+                        "max_characters": 6000,
+                    },
+                }
+            ],
+            "max_tool_calls": 5,
+            "max_completion_tokens": 1800,
+            "temperature": 0.1,
+            "provider": {"data_collection": "deny", "zdr": self._zdr},
+        }
+        message = await self._completion(payload)
+        annotations = message.get("annotations", [])
+        links = _annotation_sources(annotations)
+        evidence = _annotation_evidence(annotations)
+        notes = message.get("content")
+        if isinstance(notes, str) and notes.strip():
+            evidence["notes"] = notes.strip()[:4000]
+        return evidence, links
+
     async def _research_story(
         self, story: Story, articles: Sequence[Article]
     ) -> tuple[dict[str, object] | None, tuple[str, ...]]:
@@ -407,6 +606,56 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     return StoryAnalysis(text=text, related_story_ids=related_ids)
 
 
+def _validate_fact_check(value: object, allowed_links: set[str]) -> FactCheckResult:
+    if not isinstance(value, dict) or set(value) != {"claims"}:
+        raise EnrichmentError("OpenRouter fact check has an invalid object shape")
+    raw_claims = value["claims"]
+    if not isinstance(raw_claims, list) or len(raw_claims) > 5:
+        raise EnrichmentError("OpenRouter fact check has invalid claims")
+    claims: list[FactCheckClaim] = []
+    for raw_claim in raw_claims:
+        if not isinstance(raw_claim, dict) or set(raw_claim) != {
+            "claim",
+            "verdict",
+            "explanation",
+            "source_urls",
+        }:
+            raise EnrichmentError("OpenRouter fact check has an invalid claim shape")
+        claim = _clean_sentence(raw_claim["claim"], "fact-check claim", 500)
+        explanation = _clean_sentence(raw_claim["explanation"], "fact-check explanation", 700)
+        try:
+            verdict = FactCheckVerdict(raw_claim["verdict"])
+        except (TypeError, ValueError) as exc:
+            raise EnrichmentError("OpenRouter fact check has an invalid verdict") from exc
+        raw_urls = raw_claim["source_urls"]
+        if not isinstance(raw_urls, list) or len(raw_urls) > 4:
+            raise EnrichmentError("OpenRouter fact check has invalid source URLs")
+        urls: list[str] = []
+        for raw_url in raw_urls:
+            if not isinstance(raw_url, str):
+                raise EnrichmentError("OpenRouter fact check has invalid source URLs")
+            url = safe_external_link(raw_url)
+            if not url or url not in allowed_links:
+                raise EnrichmentError("OpenRouter fact check returned an unverified source URL")
+            if url not in urls:
+                urls.append(url)
+        sources = tuple(FactCheckSource(label=_source_label(url), url=url) for url in urls)
+        claims.append(
+            FactCheckClaim(
+                claim=claim,
+                verdict=verdict,
+                explanation=explanation,
+                sources=sources,
+            )
+        )
+    return FactCheckResult(claims=tuple(claims))
+
+
+def _source_label(url: str) -> str:
+    hostname = (urlsplit(url).hostname or "Source").removeprefix("www.")
+    return _clean_sentence(hostname, "source label", 100)
+
+
 def _clean_list(value: object, name: str, limit: int) -> tuple[str, ...]:
     if not isinstance(value, list) or len(value) > limit:
         raise EnrichmentError(f"OpenRouter response has invalid {name}")
@@ -466,7 +715,7 @@ def _annotation_sources(annotations: object) -> tuple[str, ...]:
         url = safe_external_link(str(citation.get("url") or ""))
         if url and url not in sources:
             sources.append(url)
-    return tuple(sources[:8])
+    return tuple(sources[:12])
 
 
 def _annotation_evidence(annotations: object) -> dict[str, object]:
@@ -491,7 +740,7 @@ def _annotation_evidence(annotations: object) -> dict[str, object]:
                 "excerpt": excerpt[:800],
             }
         )
-    return {"sources": sources[:5]} if sources else {}
+    return {"sources": sources[:12]} if sources else {}
 
 
 def _append_analysis_sources(

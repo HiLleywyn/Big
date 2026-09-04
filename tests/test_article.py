@@ -7,7 +7,7 @@ import httpx2
 import pytest
 
 from bigbot.article import ArticleExtractionError, ArticleExtractor, extract_article_urls
-from bigbot.bot import ArticleResultView
+from bigbot.bot import ArticleResultView, FactCheckResultView
 from bigbot.domain import (
     AnalysisState,
     Article,
@@ -16,6 +16,12 @@ from bigbot.domain import (
     Story,
     StoryState,
     utc_now,
+)
+from bigbot.enrichment import (
+    FactCheckClaim,
+    FactCheckResult,
+    FactCheckSource,
+    FactCheckVerdict,
 )
 from bigbot.service import ProcessedItem
 
@@ -188,3 +194,31 @@ def test_article_result_is_components_v2_with_story_links() -> None:
     assert "Useful context" in rendered
     assert "https://bigif.org/news/story/7/" in rendered
     assert "https://discord.com/channels/1/70" in rendered
+
+
+def test_fact_check_result_is_compact_components_v2() -> None:
+    view = FactCheckResultView(
+        FactCheckResult(
+            claims=(
+                FactCheckClaim(
+                    claim="The measure rose 3 percent.",
+                    verdict=FactCheckVerdict.TRUE,
+                    explanation="The official release reports the same increase.",
+                    sources=(
+                        FactCheckSource(
+                            label="agency.example",
+                            url="https://agency.example/release",
+                        ),
+                    ),
+                ),
+            )
+        )
+    )
+    assert isinstance(view, discord.ui.LayoutView)
+    container = view.children[0]
+    assert isinstance(container, discord.ui.Container)
+    rendered = str(container.to_component_dict())
+    assert "Fact Check" in rendered
+    assert "True" in rendered
+    assert "The measure rose 3 percent." in rendered
+    assert "https://agency.example/release" in rendered

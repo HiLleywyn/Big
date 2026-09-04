@@ -18,7 +18,13 @@ from bigbot.clustering import DeterministicClusterer
 from bigbot.config import Settings
 from bigbot.database import Database, DuplicateFeedError
 from bigbot.domain import Feed, FeedKind, FeedState, Story
-from bigbot.enrichment import EnrichmentError, build_story_analyzer
+from bigbot.enrichment import (
+    EnrichmentError,
+    FactCheckClaim,
+    FactCheckResult,
+    OpenRouterEnricher,
+    build_story_analyzer,
+)
 from bigbot.feeds.base import FeedSource
 from bigbot.feeds.rss import RssSource
 from bigbot.feeds.x import XSource
@@ -63,6 +69,7 @@ class BigBot(commands.Bot):
     database: Database
     feed_service: FeedService
     article_extractor: ArticleExtractor
+    enricher: OpenRouterEnricher | None
 
     def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.none()
@@ -95,6 +102,7 @@ class BigBot(commands.Bot):
         }
         config = self.settings.app_config
         model_overrides = await self.database.openrouter_models()
+        self.enricher = build_story_analyzer(self.settings, model_overrides=model_overrides)
         self.feed_service = FeedService(
             database=self.database,
             sources=sources,
@@ -111,7 +119,7 @@ class BigBot(commands.Bot):
             retention_after_days=config.retention.clear_after_days,
             retention_action=config.retention.action,
             retention_batch_size=config.retention.batch_size,
-            analyzer=build_story_analyzer(self.settings, model_overrides=model_overrides),
+            analyzer=self.enricher,
             related_story_limit=self.settings.related_story_limit,
         )
         self.article_extractor = ArticleExtractor(
@@ -157,6 +165,12 @@ class BigBot(commands.Bot):
             app_commands.ContextMenu(
                 name="Analyze Article",
                 callback=self.analyze_article_message,
+            )
+        )
+        self.tree.add_command(
+            app_commands.ContextMenu(
+                name="Fact Check",
+                callback=self.fact_check_message,
             )
         )
         sync_guild = self.settings.guild_id or config.guild_id
@@ -232,6 +246,34 @@ class BigBot(commands.Bot):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         await _analyze_message_article(self, interaction, message, urls[0])
+
+    async def fact_check_message(
+        self, interaction: discord.Interaction, message: discord.Message
+    ) -> None:
+        if interaction.guild_id is None:
+            await _send_notice(
+                interaction,
+                "Fact Check",
+                ("This command is available inside a server.",),
+            )
+            return
+        if self.enricher is None:
+            await _send_notice(
+                interaction,
+                "Fact Check",
+                ("Fact checking is unavailable because OpenRouter is not configured.",),
+            )
+            return
+        message_text = _message_fact_check_text(message)
+        if not message_text:
+            await _send_notice(
+                interaction,
+                "Fact Check",
+                ("The selected message has no text to check.",),
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _fact_check_message(self, interaction, message, message_text)
 
     async def on_ready(self) -> None:
         if self._scheduler is None:
@@ -501,6 +543,16 @@ class ArticleResultView(discord.ui.LayoutView):
         if source_url:
             links.append(discord.ui.Button(label="Open article", url=source_url))
         container.add_item(discord.ui.ActionRow(*links))
+        self.add_item(container)
+
+
+class FactCheckResultView(discord.ui.LayoutView):
+    def __init__(self, result: FactCheckResult) -> None:
+        super().__init__(timeout=None)
+        container: discord.ui.Container[FactCheckResultView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(discord.ui.TextDisplay(_fact_check_result_text(result)))
         self.add_item(container)
 
 
@@ -1456,9 +1508,21 @@ def _guild_id(interaction: discord.Interaction) -> int:
 
 
 def _message_article_urls(message: discord.Message) -> tuple[str, ...]:
+    return extract_article_urls(_message_text_values(message, include_embed_urls=True))
+
+
+def _message_fact_check_text(message: discord.Message) -> str:
+    values = _message_text_values(message, include_embed_urls=True)
+    return "\n".join(value.strip() for value in values if value.strip())[:8000]
+
+
+def _message_text_values(message: discord.Message, *, include_embed_urls: bool) -> list[str]:
     values: list[str] = [message.content]
     for embed in message.embeds:
-        for value in (embed.url, embed.title, embed.description, embed.author.url):
+        embed_values = [embed.title, embed.description, embed.author.name]
+        if include_embed_urls:
+            embed_values.extend((embed.url, embed.author.url))
+        for value in embed_values:
             if value:
                 values.append(str(value))
         for field in embed.fields:
@@ -1466,7 +1530,106 @@ def _message_article_urls(message: discord.Message) -> tuple[str, ...]:
                 values.append(str(field.name))
             if field.value:
                 values.append(str(field.value))
-    return extract_article_urls(values)
+    return values
+
+
+async def _fact_check_message(
+    bot: BigBot,
+    interaction: discord.Interaction,
+    message: discord.Message,
+    message_text: str,
+) -> None:
+    if bot.enricher is None or interaction.guild_id is None:
+        await interaction.edit_original_response(
+            view=NoticeView("Fact Check", ("Fact checking is not configured.",))
+        )
+        return
+    try:
+        result = await bot.enricher.fact_check(
+            guild_id=interaction.guild_id,
+            message_text=message_text,
+            message_urls=extract_article_urls((message_text,)),
+        )
+        await message.reply(
+            view=FactCheckResultView(result),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        checked = len(result.claims)
+        label = "claim" if checked == 1 else "claims"
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Fact Check",
+                (f"Checked {checked} verifiable {label} and replied to the message.",),
+            )
+        )
+        log.info(
+            "message fact check completed",
+            extra={
+                "event": "message_fact_check_completed",
+                "guild_id": interaction.guild_id,
+                "user_id": interaction.user.id,
+                "message_id": message.id,
+                "claim_count": checked,
+            },
+        )
+    except EnrichmentError as exc:
+        log.warning(
+            "message fact check failed",
+            extra={
+                "event": "message_fact_check_failed",
+                "message_id": message.id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        await interaction.edit_original_response(
+            view=NoticeView("Fact Check", (plain_text(str(exc), limit=400),))
+        )
+    except discord.Forbidden:
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Fact Check",
+                ("Big cannot reply to that message. Check its channel permissions.",),
+            )
+        )
+    except discord.HTTPException:
+        log.exception(
+            "fact-check reply failed",
+            extra={"event": "fact_check_reply_failed", "message_id": message.id},
+        )
+        await interaction.edit_original_response(
+            view=NoticeView("Fact Check", ("Discord rejected the fact-check result.",))
+        )
+
+
+def _fact_check_claim_text(index: int, claim: FactCheckClaim) -> str:
+    sections = [
+        f"### {index}. {claim.verdict.value}",
+        f"**Claim:** {plain_text(claim.claim, limit=280)}",
+        plain_text(claim.explanation, limit=420),
+    ]
+    if claim.sources:
+        links: list[str] = []
+        for source in claim.sources[:3]:
+            link = f"[{source.label}]({source.url})"
+            if len(" · ".join((*links, link))) > 650:
+                break
+            links.append(link)
+        if links:
+            sections.append(f"**Evidence:** {' · '.join(links)}")
+        else:
+            sections.append("**Evidence:** Reliable sources were found, but their links are long.")
+    else:
+        sections.append("**Evidence:** No reliable source established or refuted this claim.")
+    return "\n\n".join(sections)
+
+
+def _fact_check_result_text(result: FactCheckResult) -> str:
+    if not result.claims:
+        return "## Fact Check\n\nNo objectively verifiable factual claim was found in this message."
+    claims = [_fact_check_claim_text(index, claim) for index, claim in enumerate(result.claims, 1)]
+    text = "## Fact Check\n\n" + "\n\n".join(claims)
+    return text if len(text) <= 3900 else text[:3897].rstrip() + "..."
 
 
 async def _analyze_message_article(
