@@ -598,8 +598,8 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
         timeout_seconds=10,
         client=client,
     )
-    sparse = article(1, "Reuters")
-    sparse.description = sparse.title
+    source = article(1, "Reuters")
+    sparse = replace(source, description=source.title)
 
     result = await enricher.analyze_story(story(1), [sparse], [])
 
