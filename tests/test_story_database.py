@@ -72,6 +72,13 @@ async def test_story_schema_migrates_and_survives_restart(tmp_path) -> None:
     )
     assert [item.id for item in await database.related_stories(story.id)] == [other_story.id]
     assert [item.id for item in await database.related_stories(other_story.id)] == [story.id]
+    await database.save_story_analysis(
+        story.id,
+        analysis="**Summary**\nVotes are being counted.",
+        related_story_ids=(),
+    )
+    assert await database.related_stories(story.id) == []
+    assert await database.related_stories(other_story.id) == []
     await database.close()
 
     reopened = Database(path)
@@ -85,5 +92,5 @@ async def test_story_schema_migrates_and_survives_restart(tmp_path) -> None:
     assert (
         reopened_story.analysis is not None and "Votes are being counted" in reopened_story.analysis
     )
-    assert [item.id for item in await reopened.related_stories(story.id)] == [other_story.id]
+    assert await reopened.related_stories(story.id) == []
     await reopened.close()

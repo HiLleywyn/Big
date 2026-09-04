@@ -1901,7 +1901,7 @@ async def _analysis_feed(
 
 def _article_result_text(result: ProcessedItem) -> str:
     story = result.story
-    display = analysis_display(story.analysis or "") if story.analysis else None
+    display = analysis_display(story.analysis or "", title=story.title) if story.analysis else None
     analysis = display.body if display and display.body else _fallback_story_text(story)
     sections = [f"## {forum_title(story.title)}", analysis]
     reporting: list[tuple[str, str]] = []

@@ -27,7 +27,7 @@ from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
 
 log = logging.getLogger(__name__)
-PRESENTATION_VERSION = 9
+PRESENTATION_VERSION = 10
 
 
 def _tags_for_state(tags: tuple[str, ...], state: StoryState) -> tuple[str, ...]:

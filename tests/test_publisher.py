@@ -71,6 +71,22 @@ def test_story_embed_separates_analysis_sources_from_body() -> None:
     assert sources["value"] == "- [Public record](https://example.com/record)"
 
 
+def test_story_embed_does_not_repeat_headline_as_summary_and_fact() -> None:
+    title = "Trump will allocate $400 million to $500 million from super PAC - Reuters"
+    story = replace(
+        _story(1, title, 101),
+        analysis=(
+            "**Summary**\nTrump will allocate $400 million to $500 million from super PAC.\n\n"
+            "**Key facts**\n"
+            "- Trump will allocate $400 million to $500 million from super PAC."
+        ),
+    )
+
+    embed = _story_embed(story, [], [], []).to_dict()
+
+    assert embed["description"] == "The source supplied no verified details beyond the headline."
+
+
 def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
     story = _story(1, "Clean title", 101)
     published = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)

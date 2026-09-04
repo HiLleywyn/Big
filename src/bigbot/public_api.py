@@ -9,6 +9,7 @@ from datetime import datetime
 from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
 from bigbot.database import Database
 from bigbot.domain import AnalysisState, Article, Story, parse_time, utc_now
+from bigbot.normalization import normalize_url
 from bigbot.security import forum_title, publisher_label, safe_external_link
 
 
@@ -40,7 +41,7 @@ async def build_story_feed(
     items = [await _story_item(database, story, public_site_url) for story in visible]
     next_cursor = _encode_cursor(visible[-1]) if has_more and visible else None
     return {
-        "version": 4,
+        "version": 5,
         "generated_at": utc_now().isoformat(),
         "total": await database.count_published_stories(search=request.search, tags=request.tags),
         "has_more": has_more,
@@ -57,7 +58,7 @@ async def build_story_detail(
     if story is None:
         return None
     return {
-        "version": 4,
+        "version": 5,
         "generated_at": utc_now().isoformat(),
         "story": await _story_item(database, story, public_site_url),
     }
@@ -72,7 +73,8 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
     displayed_analysis = analysis_display(
         story.analysis
         if story.analysis_state is AnalysisState.READY and story.analysis
-        else story.summary
+        else story.summary,
+        title=story.title,
     )
     discord_url = (
         f"https://discord.com/channels/{story.guild_id}/{story.discord_thread_id}"
@@ -83,9 +85,7 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
         "id": story.id,
         "title": forum_title(story.title),
         "analysis": displayed_analysis.body,
-        "analysis_sources": [
-            {"publisher": label, "url": url} for label, url in displayed_analysis.sources
-        ],
+        "analysis_sources": _analysis_source_items(displayed_analysis.sources, articles),
         "analysis_state": story.analysis_state.value,
         "state": story.state.value,
         "tags": list(story.tags),
@@ -94,7 +94,7 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
         "discord_url": discord_url,
         "web_url": _story_url(public_site_url, story.id),
         "original": _source_item(primary) if primary is not None else None,
-        "sources": [_source_item(article) for article in articles],
+        "sources": [_source_item(article) for article in _unique_articles(articles)],
         "updates": [
             {
                 **_source_item(update.article),
@@ -183,3 +183,31 @@ def _source_item(article: Article) -> dict[str, object]:
             article.published_at.isoformat() if article.published_at is not None else None
         ),
     }
+
+
+def _unique_articles(articles: list[Article]) -> tuple[Article, ...]:
+    unique: list[Article] = []
+    seen: set[str] = set()
+    for article in articles:
+        key = normalize_url(article.canonical_url or article.url)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique.append(article)
+    return tuple(unique)
+
+
+def _analysis_source_items(
+    sources: tuple[tuple[str, str], ...], articles: list[Article]
+) -> list[dict[str, str]]:
+    article_urls = {normalize_url(article.canonical_url or article.url) for article in articles}
+    visible: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for label, url in sources:
+        key = normalize_url(url)
+        if not key or key in seen or key in article_urls:
+            continue
+        seen.add(key)
+        visible.append({"publisher": label, "url": url})
+    return visible

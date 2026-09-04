@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from bigbot.database import Database
-from bigbot.domain import FeedItem, FeedKind, StoryState
+from bigbot.domain import Article, DeliveryState, FeedItem, FeedKind, StoryState
 from bigbot.normalization import normalize_item
-from bigbot.public_api import StoryFeedQuery, build_story_detail, build_story_feed
+from bigbot.public_api import (
+    StoryFeedQuery,
+    _analysis_source_items,
+    _unique_articles,
+    build_story_detail,
+    build_story_feed,
+)
 
 
 async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_path) -> None:
@@ -121,6 +128,42 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
         is None
     )
     await database.close()
+
+
+def test_public_api_collapses_google_news_transport_copies() -> None:
+    published = datetime(2026, 9, 4, 14, 0, tzinfo=UTC)
+    original = Article(
+        id=1,
+        feed_id=1,
+        story_id=1,
+        external_id="rss-copy",
+        publisher="Reuters",
+        title="One event - Reuters",
+        url="https://news.google.com/rss/articles/ABC?oc=5",
+        canonical_url="https://news.google.com/rss/articles/ABC?oc=5",
+        published_at=published,
+        description="One event",
+        discovered_at=published,
+        normalized_title="one event",
+        entities=(),
+        keywords=(),
+        numbers=(),
+        event_terms=(),
+        fingerprint="rss",
+        delivery_state=DeliveryState.POSTED,
+        delivery_error=None,
+    )
+    duplicate = replace(
+        original,
+        id=2,
+        external_id="atom-copy",
+        url="https://news.google.com/atom/articles/ABC?oc=5",
+        canonical_url="https://news.google.com/atom/articles/ABC?oc=5",
+        fingerprint="atom",
+    )
+
+    assert _unique_articles([original, duplicate]) == (original,)
+    assert _analysis_source_items((("Google News", duplicate.url),), [original, duplicate]) == []
 
 
 async def test_public_feed_paginates_and_filters_by_search_and_tag(tmp_path) -> None:

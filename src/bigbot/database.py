@@ -1064,6 +1064,13 @@ class Database:
                 """,
                 (analysis, now, now, story_id),
             )
+            await database.execute(
+                """
+                DELETE FROM story_relationships
+                WHERE story_id_low = ? OR story_id_high = ?
+                """,
+                (story_id, story_id),
+            )
             for candidate in related:
                 low, high = sorted((story_id, candidate.id))
                 await database.execute(

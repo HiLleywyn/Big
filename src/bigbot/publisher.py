@@ -369,7 +369,7 @@ def _story_embed(
             inline=False,
         )
     if story.analysis_state is AnalysisState.READY and story.analysis:
-        analysis_sources = analysis_display(story.analysis).sources
+        analysis_sources = analysis_display(story.analysis, title=story.title).sources
         article_urls = {article.canonical_url for article in articles}
         unique_analysis_sources = [
             (label, url)
@@ -432,7 +432,10 @@ def _story_embed(
 
 def _story_description(story: Story) -> str:
     if story.analysis_state is AnalysisState.READY and story.analysis:
-        return neutralize_mentions(analysis_display(story.analysis).body)[:3000].rstrip()
+        body = neutralize_mentions(analysis_display(story.analysis, title=story.title).body)[
+            :3000
+        ].rstrip()
+        return body or "The source supplied no verified details beyond the headline."
     return plain_text(story.summary, limit=3000)
 
 
