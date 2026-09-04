@@ -55,6 +55,14 @@ class PollReport:
         return self.new_stories + self.updated_stories
 
 
+@dataclass(frozen=True)
+class ProcessedItem:
+    outcome: str
+    article: Article
+    story: Story
+    related_stories: tuple[Story, ...]
+
+
 class FeedService:
     def __init__(
         self,
@@ -335,6 +343,24 @@ class FeedService:
                 article=article,
                 significant=significant,
             )
+
+    async def process_external_item(self, feed: Feed, item: FeedItem) -> ProcessedItem:
+        """Run an external article through the canonical ingestion path and resolve its story."""
+        outcome = await self.process_item(feed, item)
+        normalized = normalize_item(item, fallback_publisher=feed.publisher or feed.name)
+        article = await self._duplicate(feed, item, normalized)
+        if article is None or article.story_id is None:
+            raise RuntimeError("processed article could not be resolved")
+        story = await self._database.get_story(article.story_id)
+        if story is None:
+            raise RuntimeError("processed story could not be resolved")
+        related = tuple(await self._database.related_stories(story.id))
+        return ProcessedItem(
+            outcome=outcome,
+            article=article,
+            story=story,
+            related_stories=related,
+        )
 
     async def refresh_presentation(
         self, *, forum_channel_id: int | None = None, force: bool = False

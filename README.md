@@ -34,6 +34,7 @@ sources, updates, and discussion
   moderator history in SQLite.
 - Fails closed when a Discord write may have succeeded but cannot be confirmed.
 - Exposes health, readiness, and a read-only public story feed on port `8787`.
+- Adds an `Analyze Article` message command under Apps for member-submitted coverage.
 
 The deterministic clustering engine is the default and needs no paid AI service. It is behind
 a small interface so a local embedding strategy can be added later without coupling feed
@@ -206,6 +207,14 @@ organized forms. `add-feed` first asks for a Forum Channel, then opens a form fo
 RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection panel with a confirm
 step. `refresh` lets moderators refresh one feed or all feeds from the panel. `tags` checks the
 selected forum and can install the missing recommended tag names without deleting existing tags.
+
+Right-click any Discord message containing an HTTPS article link, choose **Apps**, then
+**Analyze Article**. Big reads links from the message and its embeds. One link runs immediately.
+Several links open a Components V2 picker. The selected page is converted into the same
+`FeedItem` used by RSS and X, then passed to `FeedService.process_item`. Existing clusters,
+deduplication, all-source analysis, Forum publishing, and reciprocal story links therefore behave
+the same way for scheduled and member-submitted articles. The result is posted as a Components V2
+reply to the selected message.
 
 Published stories are available to the website at `GET /api/v1/stories?limit=15`. The list API
 supports an opaque `cursor`, a `q` search value, and repeated `tag` values. It returns the total,

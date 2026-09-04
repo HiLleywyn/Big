@@ -97,6 +97,7 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
                                 {
                                     "summary": "Officials announced a policy change.",
                                     "key_facts": ["Reuters and AP describe the same announcement."],
+                                    "useful_context": ["The change follows the latest meeting."],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [9],
                                 }
@@ -177,6 +178,7 @@ async def test_story_analysis_uses_web_grounding_and_response_repair() -> None:
                                 {
                                     "summary": "A report confirmed the event.",
                                     "key_facts": ["The event was reported."],
+                                    "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [],
                                 }
@@ -222,6 +224,7 @@ async def test_model_override_is_validated_and_applied_per_guild() -> None:
                                 {
                                     "summary": "A report confirmed the event.",
                                     "key_facts": ["The event was reported."],
+                                    "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [],
                                 }
@@ -271,6 +274,7 @@ async def test_web_research_timeout_falls_back_to_feed_sources() -> None:
                                 {
                                     "summary": "A report confirmed the event.",
                                     "key_facts": ["The event was reported."],
+                                    "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [],
                                 }
@@ -310,6 +314,7 @@ async def test_story_analysis_rejects_unknown_related_story_id() -> None:
                                 {
                                     "summary": "A policy changed.",
                                     "key_facts": ["One report describes the change."],
+                                    "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [999],
                                 }

@@ -218,6 +218,40 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     await database.close()
 
 
+async def test_external_item_uses_process_item_and_resolves_duplicate_story(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item(
+        "manual:one",
+        "Central bank announces a rate decision",
+        "Example News",
+        "https://news.example/rates?utm_source=discord",
+    )
+    first = await service.process_external_item(feed, item)
+    duplicate = await service.process_external_item(
+        feed,
+        _item(
+            "manual:two",
+            item.title,
+            item.publisher or "Example News",
+            "https://news.example/rates",
+        ),
+    )
+    assert first.outcome == "new_stories"
+    assert duplicate.outcome == "duplicates"
+    assert duplicate.story.id == first.story.id
+    assert duplicate.article.id == first.article.id
+    assert publisher.created == 1
+    assert publisher.updated == 0
+    assert analyzer.calls == [("Example News",)]
+    await service.close()
+    await database.close()
+
+
 async def test_presentation_refresh_reclassifies_and_edits_existing_story(tmp_path) -> None:
     publisher = FakePublisher()
     database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))

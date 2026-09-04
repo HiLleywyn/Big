@@ -158,6 +158,11 @@ class OpenRouterEnricher:
                                 "minItems": 1,
                                 "maxItems": 6,
                             },
+                            "useful_context": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "maxItems": 4,
+                            },
                             "unclear_or_disputed": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -172,6 +177,7 @@ class OpenRouterEnricher:
                         "required": [
                             "summary",
                             "key_facts",
+                            "useful_context",
                             "unclear_or_disputed",
                             "related_story_ids",
                         ],
@@ -377,6 +383,7 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     if not isinstance(value, dict) or set(value) != {
         "summary",
         "key_facts",
+        "useful_context",
         "unclear_or_disputed",
         "related_story_ids",
     }:
@@ -385,6 +392,7 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     key_facts = _clean_list(value["key_facts"], "key_facts", 6)
     if not key_facts:
         raise EnrichmentError("OpenRouter response has no key facts")
+    useful_context = _clean_list(value["useful_context"], "useful_context", 4)
     unclear = _clean_list(value["unclear_or_disputed"], "unclear_or_disputed", 5)
     raw_ids = value["related_story_ids"]
     if not isinstance(raw_ids, list) or any(
@@ -395,7 +403,7 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     unknown = set(related_ids) - allowed_relationship_ids
     if unknown:
         raise EnrichmentError("OpenRouter returned a related story ID outside the candidate list")
-    text = _render_analysis(summary, key_facts, unclear)
+    text = _render_analysis(summary, key_facts, useful_context, unclear)
     return StoryAnalysis(text=text, related_story_ids=related_ids)
 
 
@@ -429,10 +437,16 @@ def _clean_sentence(value: object, name: str, limit: int) -> str:
 
 
 def _render_analysis(
-    summary: str, key_facts: Sequence[str], unclear_or_disputed: Sequence[str]
+    summary: str,
+    key_facts: Sequence[str],
+    useful_context: Sequence[str],
+    unclear_or_disputed: Sequence[str],
 ) -> str:
     sections = ["**Summary**", summary, "", "**Key facts**"]
     sections.extend(f"- {fact}" for fact in key_facts)
+    if useful_context:
+        sections.extend(("", "**Useful context**"))
+        sections.extend(f"- {item}" for item in useful_context)
     if unclear_or_disputed:
         sections.extend(("", "**Unclear or disputed**"))
         sections.extend(f"- {item}" for item in unclear_or_disputed)

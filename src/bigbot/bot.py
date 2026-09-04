@@ -5,16 +5,19 @@ import contextlib
 import logging
 import re
 from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bigbot.analysis_format import analysis_display
+from bigbot.article import ArticleExtractionError, ArticleExtractor, extract_article_urls
 from bigbot.classification import TAG_CATALOG, StoryClassifier
 from bigbot.clustering import DeterministicClusterer
 from bigbot.config import Settings
 from bigbot.database import Database, DuplicateFeedError
-from bigbot.domain import Feed, FeedKind, FeedState
+from bigbot.domain import Feed, FeedKind, FeedState, Story
 from bigbot.enrichment import EnrichmentError, build_story_analyzer
 from bigbot.feeds.base import FeedSource
 from bigbot.feeds.rss import RssSource
@@ -22,8 +25,8 @@ from bigbot.feeds.x import XSource
 from bigbot.health import HealthServer
 from bigbot.public_api import StoryFeedQuery, build_story_detail, build_story_feed
 from bigbot.publisher import DiscordForumPublisher
-from bigbot.security import validate_feed_url
-from bigbot.service import FeedService, PollReport
+from bigbot.security import forum_title, plain_text, safe_external_link, validate_feed_url
+from bigbot.service import FeedService, PollReport, ProcessedItem
 
 log = logging.getLogger(__name__)
 FEED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,49}$")
@@ -59,6 +62,7 @@ class BigCommandTree(app_commands.CommandTree[commands.Bot]):
 class BigBot(commands.Bot):
     database: Database
     feed_service: FeedService
+    article_extractor: ArticleExtractor
 
     def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.none()
@@ -110,6 +114,10 @@ class BigBot(commands.Bot):
             analyzer=build_story_analyzer(self.settings, model_overrides=model_overrides),
             related_story_limit=self.settings.related_story_limit,
         )
+        self.article_extractor = ArticleExtractor(
+            timeout_seconds=self.settings.http_timeout_seconds,
+            max_bytes=self.settings.rss_max_bytes,
+        )
 
         async def health_status() -> dict[str, object]:
             counts = await self.database.story_counts()
@@ -145,6 +153,12 @@ class BigBot(commands.Bot):
         )
         await self._health.start()
         self.tree.add_command(NewsCommands(self))
+        self.tree.add_command(
+            app_commands.ContextMenu(
+                name="Analyze Article",
+                callback=self.analyze_article_message,
+            )
+        )
         sync_guild = self.settings.guild_id or config.guild_id
         if sync_guild:
             guild = discord.Object(id=sync_guild)
@@ -175,6 +189,8 @@ class BigBot(commands.Bot):
                     await self._scheduler
         if hasattr(self, "feed_service"):
             await self.feed_service.close()
+        if hasattr(self, "article_extractor"):
+            await self.article_extractor.close()
         for task in self._maintenance_tasks:
             task.cancel()
         if self._maintenance_tasks:
@@ -183,6 +199,39 @@ class BigBot(commands.Bot):
             await self._health.close()
         await self.database.close()
         await super().close()
+
+    async def analyze_article_message(
+        self, interaction: discord.Interaction, message: discord.Message
+    ) -> None:
+        if interaction.guild_id is None:
+            await _send_notice(
+                interaction,
+                "Analyze Article",
+                ("This command is available inside a server.",),
+            )
+            return
+        urls = _message_article_urls(message)
+        if not urls:
+            await _send_notice(
+                interaction,
+                "Analyze Article",
+                ("No supported article link was found in this message.",),
+            )
+            return
+        if len(urls) > 1:
+            await interaction.response.send_message(
+                view=ArticleChoiceView(
+                    bot=self,
+                    user_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                    message=message,
+                    urls=urls,
+                ),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _analyze_message_article(self, interaction, message, urls[0])
 
     async def on_ready(self) -> None:
         if self._scheduler is None:
@@ -347,6 +396,111 @@ class NoticeView(discord.ui.LayoutView):
         super().__init__(timeout=timeout)
         container: discord.ui.Container[NoticeView] = discord.ui.Container(accent_color=ADMIN_COLOR)
         container.add_item(discord.ui.TextDisplay(_panel_text(title, lines)))
+        self.add_item(container)
+
+
+class ArticleChoiceView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        bot: BigBot,
+        user_id: int,
+        guild_id: int,
+        message: discord.Message,
+        urls: Sequence[str],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.message = message
+        self.urls = tuple(urls[:25])
+        container: discord.ui.Container[ArticleChoiceView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(
+            discord.ui.TextDisplay(
+                _panel_text(
+                    "Analyze Article",
+                    ("Choose the article to analyze from this message.",),
+                )
+            )
+        )
+        container.add_item(discord.ui.ActionRow(ArticleUrlSelect(urls)))
+        self.add_item(container)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.user_id:
+            return True
+        await _send_notice(
+            interaction,
+            "Analyze Article",
+            ("Open Analyze Article from the message to use your own picker.",),
+        )
+        return False
+
+
+class ArticleUrlSelect(discord.ui.Select[ArticleChoiceView]):
+    def __init__(self, urls: Sequence[str]) -> None:
+        options = [
+            discord.SelectOption(
+                label=_url_option_label(url),
+                value=str(index),
+                description=_url_option_description(url),
+            )
+            for index, url in enumerate(urls[:25])
+        ]
+        super().__init__(
+            placeholder="Choose article",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="big:article:choose",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        index = int(self.values[0])
+        await _analyze_message_article(
+            parent.bot,
+            interaction,
+            parent.message,
+            parent.urls[index],
+        )
+
+
+class ArticleResultView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        result: ProcessedItem,
+        *,
+        public_site_url: str,
+    ) -> None:
+        super().__init__(timeout=None)
+        container: discord.ui.Container[ArticleResultView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(discord.ui.TextDisplay(_article_result_text(result)))
+        links: list[discord.ui.Button[ArticleResultView]] = []
+        story_url = f"{public_site_url.rstrip('/')}/news/story/{result.story.id}/"
+        links.append(discord.ui.Button(label="Open story", url=story_url))
+        if result.story.discord_thread_id is not None:
+            links.append(
+                discord.ui.Button(
+                    label="Open Forum post",
+                    url=(
+                        f"https://discord.com/channels/{result.story.guild_id}/"
+                        f"{result.story.discord_thread_id}"
+                    ),
+                )
+            )
+        source_url = safe_external_link(result.article.url)
+        if source_url:
+            links.append(discord.ui.Button(label="Open article", url=source_url))
+        container.add_item(discord.ui.ActionRow(*links))
         self.add_item(container)
 
 
@@ -1299,6 +1453,180 @@ def _guild_id(interaction: discord.Interaction) -> int:
     if interaction.guild_id is None:
         raise app_commands.NoPrivateMessage()
     return interaction.guild_id
+
+
+def _message_article_urls(message: discord.Message) -> tuple[str, ...]:
+    values: list[str] = [message.content]
+    for embed in message.embeds:
+        for value in (embed.url, embed.title, embed.description, embed.author.url):
+            if value:
+                values.append(str(value))
+        for field in embed.fields:
+            if field.name:
+                values.append(str(field.name))
+            if field.value:
+                values.append(str(field.value))
+    return extract_article_urls(values)
+
+
+async def _analyze_message_article(
+    bot: BigBot,
+    interaction: discord.Interaction,
+    message: discord.Message,
+    url: str,
+) -> None:
+    try:
+        feed = await _analysis_feed(bot, interaction.guild_id, message, url)
+        item = await bot.article_extractor.fetch(url)
+        result = await bot.feed_service.process_external_item(feed, item)
+        await message.reply(
+            view=ArticleResultView(result, public_site_url=bot.settings.public_site_url),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Analyze Article",
+                (_analysis_completion_text(result),),
+            )
+        )
+        log.info(
+            "message article analyzed",
+            extra={
+                "event": "message_article_analyzed",
+                "guild_id": interaction.guild_id,
+                "user_id": interaction.user.id,
+                "message_id": message.id,
+                "story_id": result.story.id,
+                "outcome": result.outcome,
+            },
+        )
+    except (ArticleExtractionError, ValueError) as exc:
+        await interaction.edit_original_response(
+            view=NoticeView("Analyze Article", (plain_text(str(exc), limit=400),))
+        )
+    except discord.Forbidden:
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Analyze Article",
+                ("Big cannot reply to that message. Check its channel permissions.",),
+            )
+        )
+    except discord.HTTPException:
+        log.exception(
+            "message article reply failed",
+            extra={"event": "message_article_reply_failed", "message_id": message.id},
+        )
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Analyze Article",
+                ("Discord rejected the result. Nothing was posted twice.",),
+            )
+        )
+    except Exception:
+        log.exception(
+            "message article analysis failed",
+            extra={"event": "message_article_analysis_failed", "message_id": message.id},
+        )
+        await interaction.edit_original_response(
+            view=NoticeView(
+                "Analyze Article",
+                ("The article could not be analyzed. The failure was recorded safely.",),
+            )
+        )
+
+
+async def _analysis_feed(
+    bot: BigBot,
+    guild_id: int | None,
+    message: discord.Message,
+    url: str,
+) -> Feed:
+    if guild_id is None:
+        raise ValueError("This command is available inside a server.")
+    feeds = [
+        feed for feed in await bot.database.list_feeds(guild_id) if feed.state is FeedState.ACTIVE
+    ]
+    if not feeds:
+        raise ValueError("No active Forum feed is configured for this server.")
+    parent_id = getattr(message.channel, "parent_id", None)
+    if parent_id is not None:
+        matching_forum = [feed for feed in feeds if feed.forum_channel_id == parent_id]
+        if matching_forum:
+            return matching_forum[0]
+    hostname = (urlsplit(url).hostname or "").casefold().removeprefix("www.")
+    for feed in feeds:
+        source_host = (urlsplit(feed.source).hostname or "").casefold().removeprefix("www.")
+        if hostname and hostname == source_host:
+            return feed
+    return feeds[0]
+
+
+def _article_result_text(result: ProcessedItem) -> str:
+    story = result.story
+    display = analysis_display(story.analysis or "") if story.analysis else None
+    analysis = display.body if display and display.body else _fallback_story_text(story)
+    sections = [f"## {forum_title(story.title)}", analysis]
+    reporting: list[tuple[str, str]] = []
+    if display:
+        reporting.extend(display.sources)
+    article_url = safe_external_link(result.article.url)
+    article_source = (plain_text(result.article.publisher, limit=80), article_url)
+    if article_url and article_source not in reporting:
+        reporting.insert(0, article_source)
+    if reporting:
+        sections.extend(
+            (
+                "**Related reporting**",
+                "\n".join(f"- [{label}]({url})" for label, url in reporting[:6]),
+            )
+        )
+    if result.related_stories:
+        links = [
+            _related_story_link(candidate)
+            for candidate in result.related_stories[:4]
+            if candidate.discord_thread_id is not None
+        ]
+        if links:
+            sections.extend(("**Related stories**", "\n".join(f"- {link}" for link in links)))
+    text = "\n\n".join(section for section in sections if section).strip()
+    return text if len(text) <= 3900 else text[:3897].rstrip() + "..."
+
+
+def _fallback_story_text(story: Story) -> str:
+    summary = plain_text(story.summary, limit=900)
+    return f"**Summary**\n\n{summary}"
+
+
+def _related_story_link(story: Story) -> str:
+    title = forum_title(story.title)
+    url = f"https://discord.com/channels/{story.guild_id}/{story.discord_thread_id}"
+    return f"[{title}]({url})"
+
+
+def _analysis_completion_text(result: ProcessedItem) -> str:
+    if result.outcome == "duplicates":
+        return f"Already covered in Story {result.story.id}. The existing analysis was linked."
+    if result.outcome in {"failed", "uncertain"}:
+        return (
+            f"Saved as Story {result.story.id}, but the Forum post could not be confirmed. "
+            "The article was not submitted twice."
+        )
+    return f"Added to Story {result.story.id} and replied to the selected message."
+
+
+def _url_option_label(url: str) -> str:
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "Article").removeprefix("www.")
+    path = parts.path.rstrip("/").rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")
+    label = f"{hostname}: {path}" if path else hostname
+    return plain_text(label, limit=100)
+
+
+def _url_option_description(url: str) -> str:
+    parts = urlsplit(url)
+    value = f"{parts.scheme}://{parts.netloc}{parts.path}"
+    return plain_text(value, limit=100)
 
 
 async def _status_lines(bot: BigBot, interaction: discord.Interaction) -> tuple[str, ...]:

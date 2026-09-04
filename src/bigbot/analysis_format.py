@@ -9,6 +9,7 @@ _MARKDOWN_LINK = re.compile(r"^-\s*\[([^\]]+)]\((https?://[^)\s]+)\)\s*$")
 _SECTION_HEADINGS = {
     "summary": "Summary",
     "key facts": "Key facts",
+    "useful context": "Useful context",
     "unclear or disputed": "Unclear or disputed",
 }
 
@@ -20,7 +21,7 @@ class AnalysisDisplay:
 
 
 def analysis_display(value: str) -> AnalysisDisplay:
-    """Separate verified citations from the three user-facing analysis sections."""
+    """Separate verified citations from the user-facing analysis sections."""
     body: list[str] = []
     sources: list[tuple[str, str]] = []
     in_sources = False
