@@ -416,27 +416,53 @@ async def test_story_summary_uses_one_request_when_web_search_is_enabled() -> No
     await client.aclose()
 
 
-async def test_headline_only_story_uses_bounded_web_search_and_citations() -> None:
+async def test_headline_only_story_researches_then_builds_grounded_summary() -> None:
     requests: list[dict[str, object]] = []
     cited_url = "https://example.gov/statement"
 
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         requests.append(body)
-        assert body["tools"] == [
-            {
-                "type": "openrouter:web_search",
-                "parameters": {
-                    "engine": "parallel",
-                    "mode": "turbo",
-                    "max_results": 4,
-                    "max_uses": 2,
-                    "max_total_results": 6,
-                    "max_characters": 2000,
+        if len(requests) == 1:
+            assert body["tools"] == [
+                {
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "engine": "parallel",
+                        "mode": "turbo",
+                        "max_results": 4,
+                        "max_uses": 2,
+                        "max_total_results": 6,
+                        "max_characters": 2000,
+                    },
+                }
+            ]
+            assert body["max_tool_calls"] == 2
+            return httpx2.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "An official statement confirms the allocation.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
+                                            "url": cited_url,
+                                            "title": "Official statement",
+                                            "content": "Officials confirmed the allocation.",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
                 },
-            }
-        ]
-        assert body["max_tool_calls"] == 2
+            )
+        supplied = json.loads(body["messages"][1]["content"])
+        assert "tools" not in body
+        assert supplied["web_evidence"]["sources"][0]["url"] == cited_url
         return httpx2.Response(
             200,
             json={
@@ -445,7 +471,9 @@ async def test_headline_only_story_uses_bounded_web_search_and_citations() -> No
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "summary": "Officials confirmed the allocation on Thursday.",
+                                    "summary": (
+                                        "Officials confirmed the allocation at Thursday's event."
+                                    ),
                                     "key_facts": [],
                                     "useful_context": [],
                                     "unclear_or_disputed": [],
@@ -453,12 +481,7 @@ async def test_headline_only_story_uses_bounded_web_search_and_citations() -> No
                                     "latest_update": None,
                                 }
                             ),
-                            "annotations": [
-                                {
-                                    "type": "url_citation",
-                                    "url_citation": {"url": cited_url},
-                                }
-                            ],
+                            "annotations": [],
                         }
                     }
                 ]
@@ -479,8 +502,9 @@ async def test_headline_only_story_uses_bounded_web_search_and_citations() -> No
 
     result = await enricher.analyze_story(story(1), [sparse], [])
 
-    assert len(requests) == 1
-    assert "Officials confirmed the allocation" in result.text
+    assert len(requests) == 2
+    assert "**Summary**" in result.text
+    assert "Officials confirmed the allocation at Thursday's event" in result.text
     assert f"[example.gov]({cited_url})" in result.text
     assert "Key facts" not in result.text
     await client.aclose()
