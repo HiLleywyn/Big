@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import discord
 
@@ -319,24 +321,43 @@ def _story_embed(
         embed.add_field(
             name="Primary source",
             value=(
-                f"[{plain_text(primary.publisher, limit=100)}]({safe_external_link(primary.url)})"
+                f"[{_publisher_label(primary.publisher, primary.url)}]"
+                f"({safe_external_link(primary.url)})"
             ),
             inline=False,
         )
-    sources = []
-    for article in articles[:12]:
+    primary_url = primary.canonical_url if primary is not None else ""
+    sources: list[str] = []
+    seen_urls = {primary_url} if primary_url else set()
+    for article in articles:
+        if article.canonical_url in seen_urls:
+            continue
         url = safe_external_link(article.url)
         if url:
-            sources.append(f"- [{plain_text(article.publisher, limit=80)}]({url})")
-    if len(articles) > 12:
-        sources.append(f"- {len(articles) - 12} more sources")
-    embed.add_field(
-        name=f"Sources ({len(articles)})", value="\n".join(sources) or "None", inline=False
-    )
+            seen_urls.add(article.canonical_url)
+            sources.append(f"- [{_publisher_label(article.publisher, article.url)}]({url})")
+    shown_sources = sources[:11]
+    if len(sources) > 11:
+        shown_sources.append(f"- {len(sources) - 11} more sources")
+    if shown_sources:
+        embed.add_field(
+            name=f"More sources ({len(sources)})",
+            value="\n".join(shown_sources),
+            inline=False,
+        )
     if story.analysis_state is AnalysisState.READY and story.analysis:
         analysis_sources = analysis_display(story.analysis).sources
-        if analysis_sources:
-            value = "\n".join(f"- [{label}]({url})" for label, url in analysis_sources)
+        article_urls = {article.canonical_url for article in articles}
+        unique_analysis_sources = [
+            (label, url)
+            for label, url in analysis_sources
+            if url not in article_urls and url not in {article.url for article in articles}
+        ]
+        if unique_analysis_sources:
+            value = "\n".join(
+                f"- [{_publisher_label(label, url)}]({url})"
+                for label, url in unique_analysis_sources
+            )
             embed.add_field(name="Analysis sources", value=value[:1024], inline=False)
     related = []
     for candidate in related_stories:
@@ -387,7 +408,29 @@ def _state_color(story: Story) -> discord.Color:
 
 
 def _web_story_url(public_site_url: str, story_id: int) -> str:
-    return f"{public_site_url.rstrip('/')}/news/#story-{story_id}"
+    return f"{public_site_url.rstrip('/')}/news/story/{story_id}/"
+
+
+def _publisher_label(value: str, url: str) -> str:
+    label = plain_text(value, limit=100).strip(" \"'")
+    google_query = re.search(r"(?i)site:([a-z0-9.-]+)", label)
+    if google_query:
+        label = google_query.group(1)
+    host = re.sub(r"^www\.", "", urlparse(url).hostname or "", flags=re.IGNORECASE)
+    candidate = label.casefold().removeprefix("www.")
+    known = {
+        "reuters.com": "Reuters",
+        "apnews.com": "AP",
+        "bbc.com": "BBC News",
+        "bbc.co.uk": "BBC News",
+        "cnn.com": "CNN",
+        "npr.org": "NPR",
+    }
+    if candidate in known:
+        return known[candidate]
+    if "google news" in candidate and host == "news.google.com":
+        return "Google News"
+    return label or known.get(host, host or "Source")
 
 
 def _brand_icon_file() -> discord.File:

@@ -103,5 +103,11 @@ def forum_title(value: str) -> str:
     if has_bullet_continuation and " - " in first:
         first = first.split(" - ", 1)[0]
     first = re.sub(r"^\s*(?:#{1,6}|[-*•]|\d+[.)])\s+", "", first)
+    first = re.sub(
+        r"\s+(?:-|\|)\s+(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}\s*$",
+        "",
+        first,
+        flags=re.IGNORECASE,
+    )
     title = plain_text(first, limit=100).strip(" .-|•")
     return title or "New feed item"

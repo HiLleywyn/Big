@@ -37,13 +37,15 @@ def test_story_embed_renders_analysis_and_related_thread_link() -> None:
     current = _story(1, "Current story", 101)
     related = _story(2, "Directly related story", 202)
     embed = _story_embed(current, [], [related]).to_dict()
-    assert embed["description"] == current.analysis
+    assert embed["description"] == (
+        "**Summary**\n\nCurrent story analysis.\n\n**Key facts**\n\n- One fact."
+    )
     related_field = next(field for field in embed["fields"] if field["name"] == "Related stories")
     assert "https://discord.com/channels/1/202" in related_field["value"]
     assert "Directly related story" in related_field["value"]
     assert embed["footer"] == {"text": "Published", "icon_url": BRAND_ICON_URI}
     assert embed["timestamp"] == current.first_published_at.isoformat()  # type: ignore[union-attr]
-    assert embed["url"] == "https://bigif.org/news/#story-1"
+    assert embed["url"] == "https://bigif.org/news/story/1/"
 
 
 def test_story_embed_separates_analysis_sources_from_body() -> None:
@@ -89,3 +91,45 @@ def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
     primary = next(field for field in embed["fields"] if field["name"] == "Primary source")
     assert "<t:" not in primary["value"]
     assert embed["timestamp"] == published.isoformat()
+
+
+def test_story_embed_cleans_google_news_source_and_avoids_redundant_fields() -> None:
+    story = replace(
+        _story(1, "Pacific update - reuters.com", 101),
+        analysis=(
+            "**Summary**\nCurrent update.\n\n**Key facts**\n- One fact.\n\n"
+            "**Analysis sources**\n"
+            '- ["site:reuters.com" - Google News](https://news.google.com/story)\n'
+            "- [Public record](https://example.gov/record)"
+        ),
+    )
+    published = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    article = Article(
+        id=9,
+        feed_id=1,
+        story_id=story.id,
+        external_id="source-9",
+        publisher='"site:reuters.com" - Google News',
+        title=story.title,
+        url="https://news.google.com/story",
+        canonical_url="https://news.google.com/story",
+        published_at=published,
+        description="Story description",
+        discovered_at=published,
+        normalized_title="pacific update",
+        entities=(),
+        keywords=(),
+        numbers=(),
+        event_terms=(),
+        fingerprint="fingerprint-9",
+        delivery_state=DeliveryState.POSTED,
+        delivery_error=None,
+    )
+    embed = _story_embed(story, [article], []).to_dict()
+    assert embed["title"] == "Pacific update"
+    primary = next(field for field in embed["fields"] if field["name"] == "Primary source")
+    assert primary["value"] == "[Reuters](https://news.google.com/story)"
+    assert not any(field["name"].startswith("More sources") for field in embed["fields"])
+    analysis = next(field for field in embed["fields"] if field["name"] == "Analysis sources")
+    assert "Google News" not in analysis["value"]
+    assert "Public record" in analysis["value"]

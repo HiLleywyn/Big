@@ -64,3 +64,10 @@ def test_forum_title_drops_bullet_content() -> None:
     value = "Market closes higher - point one\n- point two\n- point three"
     assert forum_title(value) == "Market closes higher"
     assert forum_title("## Clean headline\n* detail") == "Clean headline"
+
+
+def test_forum_title_drops_google_news_domain_suffix() -> None:
+    assert (
+        forum_title("Pacific leaders urge united front on missile test - reuters.com")
+        == "Pacific leaders urge united front on missile test"
+    )

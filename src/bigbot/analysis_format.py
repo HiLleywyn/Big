@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from bigbot.security import plain_text, safe_external_link
 
 _MARKDOWN_LINK = re.compile(r"^-\s*\[([^\]]+)]\((https?://[^)\s]+)\)\s*$")
+_SECTION_HEADINGS = {
+    "summary": "Summary",
+    "key facts": "Key facts",
+    "unclear or disputed": "Unclear or disputed",
+}
 
 
 @dataclass(frozen=True)
@@ -34,4 +39,21 @@ def analysis_display(value: str) -> AnalysisDisplay:
         url = safe_external_link(match.group(2))
         if label and url and (label, url) not in sources:
             sources.append((label, url))
-    return AnalysisDisplay(body="\n".join(body).strip(), sources=tuple(sources[:12]))
+    return AnalysisDisplay(body=_format_body(body), sources=tuple(sources[:12]))
+
+
+def _format_body(lines: list[str]) -> str:
+    formatted: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        heading = stripped.replace("*", "").removesuffix(":").casefold()
+        if heading in _SECTION_HEADINGS:
+            if formatted and formatted[-1] != "":
+                formatted.append("")
+            formatted.extend((f"**{_SECTION_HEADINGS[heading]}**", ""))
+        elif not stripped:
+            if formatted and formatted[-1] != "":
+                formatted.append("")
+        else:
+            formatted.append(raw_line.rstrip())
+    return "\n".join(formatted).strip()
