@@ -143,9 +143,7 @@ async def test_fact_check_researches_claims_and_validates_evidence_links() -> No
             assert body["tools"][0]["type"] == "openrouter:web_search"
             assert body["max_tool_calls"] == 5
             supplied = json.loads(body["messages"][1]["content"])
-            assert supplied["selected_message"] == (
-                "The measure rose 3 percent. Best result ever!"
-            )
+            assert supplied["selected_message"] == ("The measure rose 3 percent. Best result ever!")
             assert supplied["earlier_author_messages"] == ["The monthly release is out."]
             return httpx2.Response(
                 200,
