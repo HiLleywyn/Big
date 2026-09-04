@@ -9,7 +9,7 @@ from datetime import datetime
 from bigbot.analysis_format import analysis_display
 from bigbot.database import Database
 from bigbot.domain import AnalysisState, Article, Story, parse_time, utc_now
-from bigbot.security import forum_title, safe_external_link
+from bigbot.security import forum_title, publisher_label, safe_external_link
 
 
 @dataclass(frozen=True)
@@ -171,7 +171,7 @@ def _published_at(story: Story, primary: Article | None) -> str:
 
 def _source_item(article: Article) -> dict[str, object]:
     return {
-        "publisher": article.publisher,
+        "publisher": publisher_label(article.publisher, article.url),
         "title": forum_title(article.title),
         "url": safe_external_link(article.url),
         "published_at": (

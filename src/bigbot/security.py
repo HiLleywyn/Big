@@ -111,3 +111,25 @@ def forum_title(value: str) -> str:
     )
     title = plain_text(first, limit=100).strip(" .-|•")
     return title or "New feed item"
+
+
+def publisher_label(value: str, url: str) -> str:
+    label = plain_text(value, limit=100).strip(" \"'")
+    google_query = re.search(r"(?i)site:([a-z0-9.-]+)", label)
+    if google_query:
+        label = google_query.group(1)
+    host = re.sub(r"^www\.", "", urlparse(url).hostname or "", flags=re.IGNORECASE)
+    candidate = label.casefold().removeprefix("www.")
+    known = {
+        "reuters.com": "Reuters",
+        "apnews.com": "AP",
+        "bbc.com": "BBC News",
+        "bbc.co.uk": "BBC News",
+        "cnn.com": "CNN",
+        "npr.org": "NPR",
+    }
+    if candidate in known:
+        return known[candidate]
+    if "google news" in candidate and host == "news.google.com":
+        return "Google News"
+    return label or known.get(host, host or "Source")
