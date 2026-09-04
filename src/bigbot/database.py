@@ -990,9 +990,7 @@ class Database:
             )
         return updates
 
-    async def save_story_update_detail(
-        self, story_id: int, article_id: int, detail: str
-    ) -> None:
+    async def save_story_update_detail(self, story_id: int, article_id: int, detail: str) -> None:
         await self._db().execute(
             """
             UPDATE story_history

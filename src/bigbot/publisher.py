@@ -157,8 +157,7 @@ class DiscordForumPublisher:
                 None,
             )
             if not post_update or not (
-                update_detail
-                or story_update_detail(article.title, article.description, limit=2600)
+                update_detail or story_update_detail(article.title, article.description, limit=2600)
             ):
                 return None
             icon = _brand_icon_file()
