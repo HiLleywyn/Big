@@ -122,9 +122,9 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
         client=client,
     )
     result = await enricher.analyze_story(
-        story(1),
+        story(1, "Officials announce policy change"),
         [article(1, "Reuters"), article(2, "AP")],
-        [story(9, "A directly connected prior event")],
+        [story(9, "Officials confirm policy change")],
     )
     assert result.related_story_ids == (9,)
     assert result.latest_update == "Officials confirmed the policy change."
@@ -135,6 +135,52 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
     assert "[Reuters](https://reuters.example/story)" in result.text
     assert "[AP](https://ap.example/story)" in result.text
     assert "\u2014" not in result.text
+    await client.aclose()
+
+
+async def test_story_analysis_rejects_unrelated_supplied_candidate() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "Officials announced a policy change.",
+                                    "key_facts": [],
+                                    "useful_context": [],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [9],
+                                    "latest_update": None,
+                                }
+                            ),
+                            "annotations": [],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=False,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+
+    result = await enricher.analyze_story(
+        story(1, "Trump signs ranching order"),
+        [article(1, "Reuters")],
+        [story(9, "Russian drone strikes Ukraine security headquarters")],
+    )
+
+    assert result.related_story_ids == ()
     await client.aclose()
 
 

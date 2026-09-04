@@ -122,7 +122,8 @@ class OpenRouterEnricher:
     ) -> StoryAnalysis:
         if not articles:
             raise EnrichmentError("story analysis requires at least one article")
-        allowed_relationship_ids = {candidate.id for candidate in relationship_candidates}
+        candidate_by_id = {candidate.id: candidate for candidate in relationship_candidates}
+        allowed_relationship_ids = set(candidate_by_id)
         annotation_links: tuple[str, ...] = ()
         web_evidence: dict[str, object] | None = None
         analysis_input: dict[str, object] = {
@@ -271,6 +272,21 @@ class OpenRouterEnricher:
                 )
             raise EnrichmentError("OpenRouter returned an invalid structured response") from exc
         result = _validate_result(parsed, allowed_relationship_ids)
+        supported_relationship_ids = tuple(
+            story_id
+            for story_id in result.related_story_ids
+            if _relationship_supported(story, candidate_by_id[story_id])
+        )
+        if supported_relationship_ids != result.related_story_ids:
+            log.warning(
+                "OpenRouter suggested unsupported story relationships",
+                extra={
+                    "event": "story_relationship_rejected",
+                    "story_id": story.id,
+                    "rejected_count": len(result.related_story_ids)
+                    - len(supported_relationship_ids),
+                },
+            )
         allowed_links = {
             url
             for url in (
@@ -282,7 +298,7 @@ class OpenRouterEnricher:
         _validate_links(result, allowed_links)
         return StoryAnalysis(
             text=_append_analysis_sources(result.text, articles, annotation_links),
-            related_story_ids=result.related_story_ids,
+            related_story_ids=supported_relationship_ids,
             latest_update=result.latest_update,
         )
 
@@ -678,6 +694,51 @@ def _candidate_input(story: Story) -> dict[str, object]:
         "title": story.title,
         "summary": story.summary,
         "last_updated_at": story.last_updated_at.isoformat(),
+    }
+
+
+def _relationship_supported(left: Story, right: Story) -> bool:
+    """Require concrete shared event identity before publishing a model suggestion."""
+    left_words = _relationship_words(left.normalized_title or left.title)
+    right_words = _relationship_words(right.normalized_title or right.title)
+    shared_words = left_words & right_words
+    shorter = min(len(left_words), len(right_words))
+    title_overlap = len(shared_words) / shorter if shorter else 0.0
+    shared_entities = set(left.entities) & set(right.entities)
+    shared_events = set(left.event_terms) & set(right.event_terms)
+    shared_numbers = set(left.numbers) & set(right.numbers)
+    shared_keywords = set(left.keywords) & set(right.keywords)
+    if len(shared_words) >= 3 and title_overlap >= 0.4:
+        return True
+    concrete_anchor = bool(shared_entities or shared_events or shared_numbers)
+    return concrete_anchor and (
+        len(shared_words) >= 2 or len(shared_keywords) >= 2 or title_overlap >= 0.3
+    )
+
+
+def _relationship_words(value: str) -> set[str]:
+    ignored = {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "reuters",
+        "says",
+        "the",
+        "to",
+        "with",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", value.casefold())
+        if len(token) > 1 and token not in ignored
     }
 
 
