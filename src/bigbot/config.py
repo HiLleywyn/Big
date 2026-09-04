@@ -166,6 +166,26 @@ def _environment_tuple(name: str, default: str) -> tuple[str, ...]:
     )
 
 
+def _secret(name: str) -> str | None:
+    direct = os.getenv(name, "").strip()
+    if direct:
+        return direct
+    file_name = os.getenv(f"{name}_FILE", "").strip()
+    if not file_name:
+        return None
+    try:
+        raw = Path(file_name).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError(f"could not read {name}_FILE") from exc
+    if raw.startswith(f"{name}="):
+        raw = raw.split("=", 1)[1].strip()
+    elif raw.startswith(f"{name} "):
+        raw = raw.split(maxsplit=1)[1].strip()
+    if not raw or "\n" in raw or "\r" in raw:
+        raise ConfigurationError(f"{name}_FILE must contain one secret")
+    return raw
+
+
 def load_app_config(path: Path) -> AppConfig:
     if not path.exists():
         return AppConfig()
@@ -325,7 +345,7 @@ def load_settings(*, require_discord: bool = False) -> Settings:
     settings = Settings(
         discord_token=os.getenv("DISCORD_TOKEN") or None,
         x_bearer_token=os.getenv("X_BEARER_TOKEN") or None,
-        openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
+        openrouter_api_key=_secret("OPENROUTER_API_KEY"),
         openrouter_model=os.getenv(
             "BIG_OPENROUTER_MODEL", "deepseek/deepseek-v4-flash-0731"
         ).strip(),

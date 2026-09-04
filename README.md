@@ -88,6 +88,7 @@ BIG_HEALTH_PORT     Local health port, default 8787
 BIG_ARTICLE_MAX_BYTES Maximum HTML prefix read for message article analysis, default 4194304
 X_BEARER_TOKEN      Only required for official X feeds
 OPENROUTER_API_KEY  Optional, enables factual story summaries
+OPENROUTER_API_KEY_FILE Optional path to a one-line OpenRouter secret file
 BIG_OPENROUTER_MODEL OpenRouter model, default deepseek/deepseek-v4-flash-0731
 BIG_AI_WEB_SEARCH   Allow OpenRouter web search, default true
 BIG_AI_ZDR          Require zero data retention routing, default true

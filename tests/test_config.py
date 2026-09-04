@@ -11,6 +11,7 @@ def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
         "DISCORD_TOKEN",
         "X_BEARER_TOKEN",
         "OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY_FILE",
         "BIG_GUILD_ID",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -42,6 +43,16 @@ def test_invalid_related_story_limit_fails_closed(monkeypatch, tmp_path) -> None
     monkeypatch.setenv("BIG_RELATED_STORY_LIMIT", "21")
     with pytest.raises(ConfigurationError, match="BIG_RELATED_STORY_LIMIT"):
         load_settings()
+
+
+def test_openrouter_key_can_be_loaded_from_secret_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    key_file = tmp_path / "openrouter.secret"
+    key_file.write_text("private-test-value\n", encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY_FILE", str(key_file))
+
+    assert load_settings().openrouter_api_key == "private-test-value"
 
 
 def test_yaml_feed_configuration(tmp_path) -> None:
