@@ -115,6 +115,8 @@ def normalize_url(url: str) -> str:
     if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
         netloc = f"{hostname}:{port}"
     path = re.sub(r"/{2,}", "/", parts.path or "/")
+    if hostname == "news.google.com":
+        path = re.sub(r"^/(?:rss|atom)/articles/", "/articles/", path)
     if path != "/":
         path = path.rstrip("/")
     query = [

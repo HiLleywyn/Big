@@ -32,6 +32,7 @@ class OpenRouterTimeout(EnrichmentError):
 class StoryAnalysis:
     text: str
     related_story_ids: tuple[int, ...]
+    latest_update: str | None = None
 
 
 class FactCheckVerdict(StrEnum):
@@ -68,6 +69,8 @@ class StoryAnalyzer(Protocol):
         story: Story,
         articles: Sequence[Article],
         relationship_candidates: Sequence[Story],
+        *,
+        focus_article_id: int | None = None,
     ) -> StoryAnalysis: ...
 
     def model_for(self, guild_id: int) -> str: ...
@@ -113,6 +116,8 @@ class OpenRouterEnricher:
         story: Story,
         articles: Sequence[Article],
         relationship_candidates: Sequence[Story],
+        *,
+        focus_article_id: int | None = None,
     ) -> StoryAnalysis:
         if not articles:
             raise EnrichmentError("story analysis requires at least one article")
@@ -120,6 +125,7 @@ class OpenRouterEnricher:
         annotation_links: tuple[str, ...] = ()
         analysis_input: dict[str, object] = {
             "story_id": story.id,
+            "focus_article_id": focus_article_id,
             "articles": [_article_input(article) for article in articles],
             "relationship_candidates": [
                 _candidate_input(candidate) for candidate in relationship_candidates
@@ -151,7 +157,15 @@ class OpenRouterEnricher:
                         "other events that merely share a topic, person, organization, or place. "
                         "Related stories must be directly connected events, not merely a shared "
                         "category, tag, organization, person, or place. Return only the required "
-                        "structured result."
+                        "structured result. For latest_update, compare the focus article with the "
+                        "other records and state only the new factual information it adds in one "
+                        "or two short sentences. Return null when it is a duplicate, a rewritten "
+                        "headline, or adds no supported factual detail. Write the changed facts "
+                        "directly. Never say focus article, latest article, earlier article, "
+                        "source, report, coverage, or reporting. Do not repeat a headline."
+                        " Treat a headline as supporting material. When earlier records describe "
+                        "an expectation and the focus record states the resulting outcome, the "
+                        "outcome is new information and latest_update must state it directly."
                     ),
                 },
                 {
@@ -192,6 +206,14 @@ class OpenRouterEnricher:
                                 "items": {"type": "integer"},
                                 "maxItems": 8,
                             },
+                            "latest_update": {
+                                "type": ["string", "null"],
+                                "maxLength": 600,
+                                "description": (
+                                    "The new facts stated directly, with no references to articles "
+                                    "or the comparison process."
+                                ),
+                            },
                         },
                         "required": [
                             "summary",
@@ -199,6 +221,7 @@ class OpenRouterEnricher:
                             "useful_context",
                             "unclear_or_disputed",
                             "related_story_ids",
+                            "latest_update",
                         ],
                         "additionalProperties": False,
                     },
@@ -237,6 +260,7 @@ class OpenRouterEnricher:
         return StoryAnalysis(
             text=_append_analysis_sources(result.text, articles, annotation_links),
             related_story_ids=result.related_story_ids,
+            latest_update=result.latest_update,
         )
 
     async def fact_check(
@@ -518,6 +542,7 @@ def _openrouter_error(response: httpx2.Response) -> str:
 
 def _article_input(article: Article) -> dict[str, object]:
     return {
+        "article_id": article.id,
         "title": article.title,
         "description": article.description,
         "publisher": article.publisher,
@@ -542,6 +567,7 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
         "useful_context",
         "unclear_or_disputed",
         "related_story_ids",
+        "latest_update",
     }:
         raise EnrichmentError("OpenRouter response has an invalid object shape")
     summary = _clean_sentence(value["summary"], "summary", 800)
@@ -559,8 +585,18 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     unknown = set(related_ids) - allowed_relationship_ids
     if unknown:
         raise EnrichmentError("OpenRouter returned a related story ID outside the candidate list")
+    raw_latest_update = value["latest_update"]
+    latest_update = (
+        None
+        if raw_latest_update is None
+        else _clean_sentence(raw_latest_update, "latest_update", 600)
+    )
     text = _render_analysis(summary, key_facts, useful_context, unclear)
-    return StoryAnalysis(text=text, related_story_ids=related_ids)
+    return StoryAnalysis(
+        text=text,
+        related_story_ids=related_ids,
+        latest_update=latest_update,
+    )
 
 
 def _validate_fact_check(

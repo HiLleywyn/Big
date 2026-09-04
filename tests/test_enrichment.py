@@ -84,7 +84,9 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
             "publisher",
             "url",
             "published_at",
+            "article_id",
         }
+        assert supplied["focus_article_id"] is None
         assert supplied["relationship_candidates"][0]["story_id"] == 9
         return httpx2.Response(
             200,
@@ -99,6 +101,7 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
                                     "useful_context": ["The change follows the latest meeting."],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [9],
+                                    "latest_update": "Officials confirmed the policy change.",
                                 }
                             ),
                             "annotations": [],
@@ -123,6 +126,7 @@ async def test_story_analysis_uses_all_sources_and_validates_structure() -> None
         [story(9, "A directly connected prior event")],
     )
     assert result.related_story_ids == (9,)
+    assert result.latest_update == "Officials confirmed the policy change."
     assert result.text.startswith("**Summary**\n")
     assert "**Key facts**" in result.text
     assert "Unclear or disputed" not in result.text
@@ -386,6 +390,7 @@ async def test_story_summary_uses_one_request_when_web_search_is_enabled() -> No
                                     "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [],
+                                    "latest_update": None,
                                 }
                             ),
                             "annotations": [],
@@ -432,6 +437,7 @@ async def test_model_override_is_validated_and_applied_per_guild() -> None:
                                     "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [],
+                                    "latest_update": None,
                                 }
                             ),
                             "annotations": [],
@@ -473,6 +479,7 @@ async def test_story_analysis_rejects_unknown_related_story_id() -> None:
                                     "useful_context": [],
                                     "unclear_or_disputed": [],
                                     "related_story_ids": [999],
+                                    "latest_update": None,
                                 }
                             ),
                             "annotations": [],

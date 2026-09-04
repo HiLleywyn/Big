@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from bigbot.analysis_format import analysis_display
+from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
 from bigbot.database import Database
 from bigbot.domain import AnalysisState, Article, Story, parse_time, utc_now
 from bigbot.security import forum_title, publisher_label, safe_external_link
@@ -40,7 +40,7 @@ async def build_story_feed(
     items = [await _story_item(database, story, public_site_url) for story in visible]
     next_cursor = _encode_cursor(visible[-1]) if has_more and visible else None
     return {
-        "version": 3,
+        "version": 4,
         "generated_at": utc_now().isoformat(),
         "total": await database.count_published_stories(search=request.search, tags=request.tags),
         "has_more": has_more,
@@ -57,7 +57,7 @@ async def build_story_detail(
     if story is None:
         return None
     return {
-        "version": 3,
+        "version": 4,
         "generated_at": utc_now().isoformat(),
         "story": await _story_item(database, story, public_site_url),
     }
@@ -68,6 +68,7 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
     updates = await database.story_updates(story.id)
     related = await database.related_stories(story.id)
     primary = _primary_article(story, articles)
+    visible_updates = visible_story_updates(primary, updates)
     displayed_analysis = analysis_display(
         story.analysis
         if story.analysis_state is AnalysisState.READY and story.analysis
@@ -97,10 +98,14 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
         "updates": [
             {
                 **_source_item(update.article),
+                "detail": update.detail
+                or story_update_detail(
+                    update.article.title, update.article.description, limit=1000
+                ),
                 "kind": "major" if update.kind == "major_update" else "source",
                 "recorded_at": update.recorded_at.isoformat(),
             }
-            for update in updates
+            for update in visible_updates
         ],
         "related": [
             {

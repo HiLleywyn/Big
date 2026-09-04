@@ -60,7 +60,7 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
         datetime(2026, 9, 2, 13, 0, tzinfo=UTC),
     )
     latest_story = (await database.get_story(story.id)) or story
-    await database.attach_article(
+    _, update_article = await database.attach_article(
         story=latest_story,
         feed=feed,
         item=update_item,
@@ -69,6 +69,11 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
         state=StoryState.DEVELOPING,
         priority=90,
         significant=True,
+    )
+    await database.save_story_update_detail(
+        story.id,
+        update_article.id,
+        "Officials confirmed that the first count is now available.",
     )
 
     payload = await build_story_feed(
@@ -93,6 +98,7 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
             "title": "Election officials publish an initial count",
             "url": "https://example.com/story-update",
             "published_at": "2026-09-02T13:00:00+00:00",
+            "detail": "Officials confirmed that the first count is now available.",
             "kind": "major",
             "recorded_at": result["updates"][0]["recorded_at"],
         }

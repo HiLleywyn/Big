@@ -27,7 +27,7 @@ from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
 
 log = logging.getLogger(__name__)
-PRESENTATION_VERSION = 5
+PRESENTATION_VERSION = 9
 
 
 def _tags_for_state(tags: tuple[str, ...], state: StoryState) -> tuple[str, ...]:
@@ -703,12 +703,21 @@ class FeedService:
                 limit=self._related_story_limit,
             )
             try:
-                result = await self._analyzer.analyze_story(story, articles, candidates)
+                result = await self._analyzer.analyze_story(
+                    story,
+                    articles,
+                    candidates,
+                    focus_article_id=article.id,
+                )
                 await self._database.save_story_analysis(
                     story.id,
                     analysis=result.text,
                     related_story_ids=result.related_story_ids,
                 )
+                if result.latest_update:
+                    await self._database.save_story_update_detail(
+                        story.id, article.id, result.latest_update
+                    )
                 log.info(
                     "story analysis updated",
                     extra={

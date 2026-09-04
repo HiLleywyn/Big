@@ -6,7 +6,7 @@ from typing import Protocol
 
 import discord
 
-from bigbot.analysis_format import analysis_display
+from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
 from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story, StoryUpdate
 from bigbot.security import (
     forum_title,
@@ -148,12 +148,23 @@ class DiscordForumPublisher:
                     embed=embed,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-            if not post_update:
+            update_detail = next(
+                (
+                    update.detail
+                    for update in reversed(updates)
+                    if update.article.id == article.id and update.detail
+                ),
+                None,
+            )
+            if not post_update or not (
+                update_detail
+                or story_update_detail(article.title, article.description, limit=2600)
+            ):
                 return None
             icon = _brand_icon_file()
             try:
                 message = await thread.send(
-                    embed=_update_embed(article),
+                    embed=_update_embed(article, detail=update_detail),
                     file=icon,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -372,18 +383,32 @@ def _story_embed(
                 for label, url in unique_analysis_sources
             )
             embed.add_field(name="Additional sources", value=value[:1024], inline=False)
-    if updates:
+    visible_updates = visible_story_updates(primary, updates)
+    if visible_updates:
         update_lines = []
-        for update in updates[-5:]:
+        shown_updates = visible_updates[-4:]
+        if len(visible_updates) > len(shown_updates):
+            earlier_count = len(visible_updates) - len(shown_updates)
+            update_lines.append(f"{earlier_count} earlier updates on the story page")
+        for update in shown_updates:
             article = update.article
             link = safe_external_link(article.url)
-            label = plain_text(article.title, limit=130)
-            if link:
-                label = f"[{label}]({link})"
-            timestamp = int((article.published_at or update.recorded_at).timestamp())
-            update_lines.append(
-                f"- **{plain_text(article.publisher, limit=80)}:** {label}  <t:{timestamp}:R>"
+            detail = update.detail or story_update_detail(
+                article.title, article.description, limit=170
             )
+            if not detail:
+                detail = "The source did not provide separate update details."
+            source = (
+                f"[{publisher_label(article.publisher, article.url)}: "
+                f"{plain_text(article.title, limit=100)}]({link})"
+                if link
+                else (
+                    f"{publisher_label(article.publisher, article.url)}: "
+                    f"{plain_text(article.title, limit=100)}"
+                )
+            )
+            timestamp = int((article.published_at or update.recorded_at).timestamp())
+            update_lines.append(f"**{detail}**\n{source}  <t:{timestamp}:R>")
         embed.add_field(name="Updates", value="\n".join(update_lines)[:1024], inline=False)
     related = []
     for candidate in related_stories:
@@ -412,21 +437,23 @@ def _story_description(story: Story) -> str:
     return plain_text(story.summary, limit=3000)
 
 
-def _update_embed(article: Article) -> discord.Embed:
+def _update_embed(article: Article, *, detail: str | None = None) -> discord.Embed:
     link = safe_external_link(article.url)
+    update_detail = detail or story_update_detail(article.title, article.description, limit=2600)
+    if not update_detail:
+        update_detail = "The source did not provide separate update details."
+    source = (
+        f"[{publisher_label(article.publisher, article.url)}: "
+        f"{plain_text(article.title, limit=240)}]({link})"
+        if link
+        else (
+            f"{publisher_label(article.publisher, article.url)}: "
+            f"{plain_text(article.title, limit=240)}"
+        )
+    )
     embed = discord.Embed(
         title="Story update",
-        description=(
-            f"**{plain_text(article.publisher, limit=180)}**\n"
-            f"[{plain_text(article.title, limit=240)}]({link})\n\n"
-            f"{plain_text(article.description, limit=2600)}"
-            if link
-            else (
-                f"**{plain_text(article.publisher, limit=180)}**\n"
-                f"{plain_text(article.title, limit=240)}\n\n"
-                f"{plain_text(article.description, limit=2600)}"
-            )
-        ),
+        description=f"{update_detail}\n\n**Source**\n{source}",
         url=link or None,
         color=discord.Color.orange(),
         timestamp=article.published_at,

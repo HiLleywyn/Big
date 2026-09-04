@@ -126,12 +126,59 @@ def test_story_embed_separates_updates_from_original_report() -> None:
         delivery_error=None,
     )
     update = StoryUpdate(article=article, kind="major_update", recorded_at=published)
+    original = replace(
+        article,
+        id=7,
+        title="Officials begin counting votes",
+        url="https://example.com/original",
+        canonical_url="https://example.com/original",
+        description="The count began after polls closed.",
+    )
 
-    embed = _story_embed(story, [article], [], [update]).to_dict()
+    embed = _story_embed(story, [original, article], [], [update]).to_dict()
 
     updates = next(field for field in embed["fields"] if field["name"] == "Updates")
-    assert "Officials publish a new count" in updates["value"]
+    assert "New confirmed figures were published." in updates["value"]
+    assert "Wire: Officials publish a new count" in updates["value"]
     assert "<t:1788363000:R>" in updates["value"]
+
+
+def test_story_embed_hides_repeated_transport_copy_from_updates() -> None:
+    story = _story(1, "Clean title", 101)
+    published = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)
+    original = Article(
+        id=8,
+        feed_id=1,
+        story_id=story.id,
+        external_id="rss-8",
+        publisher="Reuters",
+        title="Officials publish a new count - Reuters",
+        url="https://news.google.com/rss/articles/ABC?oc=5",
+        canonical_url="https://news.google.com/rss/articles/ABC?oc=5",
+        published_at=published,
+        description="Officials publish a new count Reuters",
+        discovered_at=published,
+        normalized_title="official publish new count",
+        entities=(),
+        keywords=(),
+        numbers=(),
+        event_terms=(),
+        fingerprint="fingerprint-update",
+        delivery_state=DeliveryState.POSTED,
+        delivery_error=None,
+    )
+    duplicate = replace(
+        original,
+        id=9,
+        external_id="atom-8",
+        url="https://news.google.com/atom/articles/ABC?oc=5",
+        canonical_url="https://news.google.com/atom/articles/ABC?oc=5",
+    )
+    update = StoryUpdate(article=duplicate, kind="major_update", recorded_at=published)
+
+    embed = _story_embed(story, [original, duplicate], [], [update]).to_dict()
+
+    assert all(field["name"] != "Updates" for field in embed["fields"])
 
 
 def test_story_embed_cleans_google_news_source_and_avoids_redundant_fields() -> None:

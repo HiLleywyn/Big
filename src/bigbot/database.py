@@ -965,7 +965,8 @@ class Database:
         cursor = await self._db().execute(
             """
             SELECT articles.*, story_history.action AS history_action,
-                   story_history.created_at AS history_created_at
+                   story_history.created_at AS history_created_at,
+                   story_history.detail_json AS history_detail_json
             FROM story_history
             JOIN articles ON articles.id = story_history.article_id
             WHERE story_history.story_id = ?
@@ -977,14 +978,35 @@ class Database:
         )
         updates: list[StoryUpdate] = []
         async for row in cursor:
+            detail_value = json.loads(str(row["history_detail_json"]) or "{}")
+            detail = detail_value.get("update") if isinstance(detail_value, dict) else None
             updates.append(
                 StoryUpdate(
                     article=_article_from_row(row),
                     kind=str(row["history_action"]),
                     recorded_at=parse_time(str(row["history_created_at"])) or utc_now(),
+                    detail=str(detail) if detail else None,
                 )
             )
         return updates
+
+    async def save_story_update_detail(
+        self, story_id: int, article_id: int, detail: str
+    ) -> None:
+        await self._db().execute(
+            """
+            UPDATE story_history
+            SET detail_json = ?
+            WHERE id = (
+                SELECT id FROM story_history
+                WHERE story_id = ? AND article_id = ?
+                  AND action IN ('major_update', 'source_added')
+                ORDER BY id DESC LIMIT 1
+            )
+            """,
+            (json.dumps({"update": detail}), story_id, article_id),
+        )
+        await self._db().commit()
 
     async def relationship_candidates(
         self,

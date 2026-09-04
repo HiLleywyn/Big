@@ -14,6 +14,12 @@ def test_url_normalization_removes_tracking_and_normalizes_shape() -> None:
     assert first == second == "https://example.com/news/story?a=1&b=2"
 
 
+def test_google_news_rss_and_atom_article_urls_are_the_same_article() -> None:
+    rss = normalize_url("https://news.google.com/rss/articles/ABC123?oc=5")
+    atom = normalize_url("https://news.google.com/atom/articles/ABC123?oc=5")
+    assert rss == atom == "https://news.google.com/articles/ABC123?oc=5"
+
+
 def test_headline_normalization_handles_common_news_paraphrases() -> None:
     assert normalize_headline("Federal Reserve lowers interest rates by a quarter point") == (
         "fed cut rates 25 bps"

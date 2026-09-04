@@ -162,6 +162,7 @@ class StoryUpdate:
     article: Article
     kind: str
     recorded_at: datetime
+    detail: str | None = None
 
 
 @dataclass(frozen=True)

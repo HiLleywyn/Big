@@ -102,6 +102,8 @@ class FakeAnalyzer:
         story: Story,
         articles: list[Article],
         relationship_candidates: list[Story],
+        *,
+        focus_article_id: int | None = None,
     ) -> StoryAnalysis:
         self.calls.append(tuple(article.publisher for article in articles))
         if self.fail:
@@ -119,6 +121,9 @@ class FakeAnalyzer:
                 "- Available reports describe the event."
             ),
             related_story_ids=related,
+            latest_update=(
+                "Officials confirmed additional details." if len(articles) > 1 else None
+            ),
         )
 
     async def close(self) -> None:
@@ -225,6 +230,9 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     assert stored.analysis is not None and "2 sources" in stored.analysis
     assert publisher.updated_story_ids == [stored.id]
     assert "2 sources" in (publisher.analysis_by_story[stored.id] or "")
+    updates = await database.story_updates(stored.id)
+    assert len(updates) == 1
+    assert updates[0].detail == "Officials confirmed additional details."
     await database.close()
 
 
