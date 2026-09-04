@@ -347,7 +347,7 @@ class NewsCommands(app_commands.Group):
         view = await _make_feed_dashboard(self.bot, interaction)
         await interaction.response.send_message(view=view, ephemeral=True)
 
-    @app_commands.command(name="settings", description="Configure story analysis")
+    @app_commands.command(name="settings", description="Configure story summaries")
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def settings(self, interaction: discord.Interaction) -> None:
@@ -801,6 +801,7 @@ class FeedDashboardView(OwnedLayoutView):
                 discord.ui.ActionRow(
                     RefreshFeedButton(selected.id),
                     ToggleFeedButton(selected),
+                    ToggleSummarizationButton(selected),
                     RemoveFeedButton(selected.id),
                 )
             )
@@ -845,14 +846,15 @@ class AnalysisSettingsView(OwnedLayoutView):
         self.model = model
         lines = [
             f"Model: `{_clean_text(model, 200)}`" if model else "OpenRouter is not configured.",
-            f"Web grounding: {'on' if bot.settings.ai_web_search else 'off'}",
+            "Summaries use the reporting stored with each story.",
+            "Each feed controls whether summaries are enabled.",
         ]
         if notice:
             lines.insert(0, notice)
         container: discord.ui.Container[AnalysisSettingsView] = discord.ui.Container(
             accent_color=ADMIN_COLOR
         )
-        container.add_item(discord.ui.TextDisplay(_panel_text("Story Analysis", lines)))
+        container.add_item(discord.ui.TextDisplay(_panel_text("Story Summaries", lines)))
         container.add_item(discord.ui.ActionRow(ChangeAnalysisModelButton(disabled=model is None)))
         self.add_item(container)
 
@@ -878,7 +880,7 @@ class ChangeAnalysisModelButton(discord.ui.Button[AnalysisSettingsView]):
 class AnalysisModelModal(discord.ui.Modal):
     def __init__(self, bot: BigBot, guild_id: int, current_model: str) -> None:
         super().__init__(
-            title="Story analysis model",
+            title="Story summary model",
             timeout=300,
             custom_id="big:settings:model_form",
         )
@@ -902,7 +904,7 @@ class AnalysisModelModal(discord.ui.Modal):
                 actor_id=interaction.user.id,
             )
         except (EnrichmentError, ValueError) as exc:
-            await _send_notice(interaction, "Story Analysis", (str(exc),))
+            await _send_notice(interaction, "Story Summaries", (str(exc),))
             return
         await interaction.followup.send(
             view=AnalysisSettingsView(
@@ -1067,6 +1069,48 @@ class ToggleFeedButton(discord.ui.Button[FeedDashboardView]):
         await interaction.response.edit_message(view=view)
 
 
+class ToggleSummarizationButton(discord.ui.Button[FeedDashboardView]):
+    def __init__(self, feed: Feed) -> None:
+        self.feed_id = feed.id
+        self.enabled = not feed.summarization_enabled
+        super().__init__(
+            label="Summaries off" if feed.summarization_enabled else "Summaries on",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"big:feed:{feed.id}:summaries",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        changed = await parent.bot.database.set_feed_summarization(
+            self.feed_id,
+            enabled=self.enabled,
+        )
+        if changed:
+            await parent.bot.database.audit(
+                guild_id=parent.guild_id,
+                actor_id=interaction.user.id,
+                action="news.feed_summarization",
+                subject=str(self.feed_id),
+                detail={"enabled": self.enabled},
+            )
+        state = "enabled" if self.enabled else "disabled"
+        notice = (
+            f"Summaries {state}. This applies when a story is next created or updated."
+            if changed
+            else "Feed was not found."
+        )
+        view = await _make_feed_dashboard(
+            parent.bot,
+            interaction,
+            selected_feed_id=self.feed_id,
+            notice=notice,
+            mode=parent.mode,
+        )
+        await interaction.response.edit_message(view=view)
+
+
 class RemoveFeedButton(discord.ui.Button[FeedDashboardView]):
     def __init__(self, feed_id: int) -> None:
         super().__init__(
@@ -1210,7 +1254,72 @@ class ForumChannelSelect(discord.ui.ChannelSelect[AddFeedForumView]):
         if not isinstance(channel, discord.ForumChannel):
             await _send_notice(interaction, "Add Feed", ("Select a Forum Channel.",))
             return
-        await interaction.response.send_modal(AddFeedModal(parent.bot, parent.guild_id, channel))
+        await interaction.response.edit_message(
+            view=AddFeedSummaryView(
+                bot=parent.bot,
+                user_id=parent.user_id,
+                guild_id=parent.guild_id,
+                forum=channel,
+            )
+        )
+
+
+class AddFeedSummaryView(OwnedLayoutView):
+    def __init__(
+        self,
+        *,
+        bot: BigBot,
+        user_id: int,
+        guild_id: int,
+        forum: discord.ForumChannel,
+    ) -> None:
+        super().__init__(bot=bot, user_id=user_id, guild_id=guild_id)
+        self.forum = forum
+        container: discord.ui.Container[AddFeedSummaryView] = discord.ui.Container(
+            accent_color=ADMIN_COLOR
+        )
+        container.add_item(
+            discord.ui.TextDisplay(
+                _panel_text(
+                    "Story Summaries",
+                    (
+                        f"Forum: {forum.mention}",
+                        "Choose whether stories from this feed receive a factual source summary.",
+                    ),
+                )
+            )
+        )
+        container.add_item(
+            discord.ui.ActionRow(
+                AddFeedSummaryChoiceButton(enabled=True),
+                AddFeedSummaryChoiceButton(enabled=False),
+            )
+        )
+        container.add_item(discord.ui.ActionRow(CancelAddFeedButton()))
+        self.add_item(container)
+
+
+class AddFeedSummaryChoiceButton(discord.ui.Button[AddFeedSummaryView]):
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+        super().__init__(
+            label="Summaries on" if enabled else "Summaries off",
+            style=discord.ButtonStyle.primary if enabled else discord.ButtonStyle.secondary,
+            custom_id=f"big:feed:summary:{'on' if enabled else 'off'}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        parent = self.view
+        if parent is None:
+            return
+        await interaction.response.send_modal(
+            AddFeedModal(
+                parent.bot,
+                parent.guild_id,
+                parent.forum,
+                summarization_enabled=self.enabled,
+            )
+        )
 
 
 class CancelAddFeedButton(discord.ui.Button[AddFeedForumView]):
@@ -1230,11 +1339,19 @@ class CancelAddFeedButton(discord.ui.Button[AddFeedForumView]):
 
 
 class AddFeedModal(discord.ui.Modal):
-    def __init__(self, bot: BigBot, guild_id: int, forum: discord.ForumChannel) -> None:
+    def __init__(
+        self,
+        bot: BigBot,
+        guild_id: int,
+        forum: discord.ForumChannel,
+        *,
+        summarization_enabled: bool,
+    ) -> None:
         super().__init__(title="Add feed", timeout=300, custom_id="big:feed:add_modal")
         self.bot = bot
         self.guild_id = guild_id
         self.forum = forum
+        self.summarization_enabled = summarization_enabled
         self.name_input: discord.ui.TextInput[AddFeedModal] = discord.ui.TextInput(
             custom_id="name",
             placeholder="Reuters Markets",
@@ -1295,6 +1412,7 @@ class AddFeedModal(discord.ui.Modal):
                 include_replies=False,
                 include_reposts=False,
                 created_by=interaction.user.id,
+                summarization_enabled=self.summarization_enabled,
             )
         except DuplicateFeedError as exc:
             await _send_notice(interaction, "Add Feed", (str(exc),))
@@ -1307,7 +1425,11 @@ class AddFeedModal(discord.ui.Modal):
             actor_id=interaction.user.id,
             action="news.add_feed",
             subject=str(feed.id),
-            detail={"forum_channel_id": self.forum.id, "url": url},
+            detail={
+                "forum_channel_id": self.forum.id,
+                "url": url,
+                "summarization_enabled": self.summarization_enabled,
+            },
         )
         view = await _make_feed_dashboard(
             self.bot,
@@ -1498,6 +1620,7 @@ async def _sync_yaml_feeds(database: Database, settings: Settings) -> None:
             publisher=spec.publisher,
             interval_seconds=spec.interval_seconds,
             default_tags=spec.default_tags,
+            summarization_enabled=spec.summarization_enabled,
         )
 
 
@@ -1900,6 +2023,7 @@ def _feed_detail_text(feed: Feed) -> str:
         f"Forum: <#{feed.forum_channel_id}>",
         f"Publisher: {_clean_text(feed.publisher or feed.name, 80)}",
         f"State: {feed.state.value}",
+        f"Summaries: {'on' if feed.summarization_enabled else 'off'}",
         f"Tags: {tags}",
         f"Interval: {feed.interval_seconds // 60} minutes",
         f"Last poll: {last_polled}",
@@ -1916,7 +2040,8 @@ def _select_label(feed: Feed) -> str:
 
 def _select_description(feed: Feed) -> str:
     tags = ", ".join(feed.default_tags) or "automatic tags"
-    return _clean_text(f"{feed.interval_seconds // 60} min | {tags}", 100)
+    summaries = "summaries on" if feed.summarization_enabled else "summaries off"
+    return _clean_text(f"{feed.interval_seconds // 60} min | {summaries} | {tags}", 100)
 
 
 def _clean_text(value: str, limit: int) -> str:

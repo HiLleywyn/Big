@@ -81,6 +81,7 @@ class Feed:
     default_tags: tuple[str, ...] = ()
     failure_count: int = 0
     publisher: str = ""
+    summarization_enabled: bool = True
 
 
 @dataclass(frozen=True)

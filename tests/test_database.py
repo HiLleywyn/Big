@@ -29,6 +29,7 @@ async def test_feed_lifecycle_and_delivery_dedup(tmp_path) -> None:
     feed = await _feed(database)
     assert feed.name == "news"
     assert feed.tag_ids == (3,)
+    assert feed.summarization_enabled
     assert len(await database.due_feeds(datetime.now(UTC))) == 1
 
     await database.record_fetch_error(
@@ -49,6 +50,9 @@ async def test_feed_lifecycle_and_delivery_dedup(tmp_path) -> None:
 
     assert await database.set_feed_state(feed.id, FeedState.PAUSED)
     assert (await database.get_feed(feed.id)).state is FeedState.PAUSED  # type: ignore[union-attr]
+    assert await database.set_feed_summarization(feed.id, enabled=False)
+    updated = await database.get_feed(feed.id)
+    assert updated is not None and not updated.summarization_enabled
     assert await database.remove_feed(feed.id)
     assert await database.get_feed(feed.id) is None
     await database.close()

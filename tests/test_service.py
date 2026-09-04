@@ -133,7 +133,13 @@ class FakeAnalyzer:
         self.models[guild_id] = model
 
 
-async def _feed(database: Database, name: str = "wire", *, kind: FeedKind = FeedKind.RSS) -> Feed:
+async def _feed(
+    database: Database,
+    name: str = "wire",
+    *,
+    kind: FeedKind = FeedKind.RSS,
+    summarization_enabled: bool = True,
+) -> Feed:
     return await database.add_feed(
         guild_id=1,
         forum_channel_id=2,
@@ -146,6 +152,7 @@ async def _feed(database: Database, name: str = "wire", *, kind: FeedKind = Feed
         include_replies=False,
         include_reposts=False,
         created_by=3,
+        summarization_enabled=summarization_enabled,
     )
 
 
@@ -215,6 +222,61 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     assert stored.analysis is not None and "2 sources" in stored.analysis
     assert publisher.updated_story_ids == [stored.id]
     assert "2 sources" in (publisher.analysis_by_story[stored.id] or "")
+    await database.close()
+
+
+async def test_feed_summary_setting_skips_model_and_uses_deterministic_story(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database, summarization_enabled=False)
+
+    assert (
+        await service.process_item(
+            feed,
+            _item("one", "Court publishes a final ruling", "Wire", "https://example.com/one"),
+        )
+        == "new_stories"
+    )
+
+    story = (await database.published_stories(limit=1))[0]
+    assert analyzer.calls == []
+    assert story.analysis is None
+    assert story.analysis_state.value == "disabled"
+    assert publisher.analysis_by_story[story.id] is None
+    await service.close()
+    await database.close()
+
+
+async def test_one_enabled_feed_summarizes_complete_multi_source_story(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    disabled = await _feed(database, "wire", summarization_enabled=False)
+    enabled = await _feed(database, "wire-two", summarization_enabled=True)
+
+    first = _item(
+        "one",
+        "Federal Reserve cuts interest rates by 25 basis points",
+        "Reuters",
+        "https://reuters.example/rates",
+    )
+    second = _item(
+        "two",
+        "Fed lowers key interest rate by quarter point",
+        "AP",
+        "https://ap.example/rates",
+    )
+    assert await service.process_item(disabled, first) == "new_stories"
+    assert await service.process_item(enabled, second) == "updated_stories"
+    assert analyzer.calls == [("Reuters", "AP")]
+    story = (await database.published_stories(limit=1))[0]
+    assert story.analysis is not None and "2 sources" in story.analysis
+    await service.close()
     await database.close()
 
 

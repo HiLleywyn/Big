@@ -9,7 +9,8 @@ _MARKDOWN_LINK = re.compile(r"^-\s*\[([^\]]+)]\((https?://[^)\s]+)\)\s*$")
 _SECTION_HEADINGS = {
     "summary": "Summary",
     "key facts": "Key facts",
-    "useful context": "Useful context",
+    "useful context": "Context",
+    "context": "Context",
     "unclear or disputed": "Unclear or disputed",
 }
 
@@ -27,7 +28,7 @@ def analysis_display(value: str) -> AnalysisDisplay:
     in_sources = False
     for raw_line in value.splitlines():
         heading = raw_line.strip().replace("*", "").removesuffix(":").casefold()
-        if heading == "analysis sources":
+        if heading in {"analysis sources", "sources"}:
             in_sources = True
             continue
         if not in_sources:

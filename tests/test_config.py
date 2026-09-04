@@ -57,6 +57,7 @@ feeds:
   - name: Wire
     publisher: Wire Service
     url: https://example.com/rss
+    summarization_enabled: false
     default_tags: [World]
 """,
         encoding="utf-8",
@@ -65,6 +66,7 @@ feeds:
     assert config.clustering.threshold == 0.7
     assert config.clustering.window_hours == 48
     assert config.feeds[0].default_tags == ("World",)
+    assert not config.feeds[0].summarization_enabled
 
 
 def test_yaml_retention_configuration(tmp_path) -> None:

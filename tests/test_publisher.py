@@ -59,7 +59,7 @@ def test_story_embed_separates_analysis_sources_from_body() -> None:
     )
     embed = _story_embed(story, [], []).to_dict()
     assert "Analysis sources" not in embed["description"]
-    sources = next(field for field in embed["fields"] if field["name"] == "Analysis sources")
+    sources = next(field for field in embed["fields"] if field["name"] == "Additional sources")
     assert sources["value"] == "- [Public record](https://example.com/record)"
 
 
@@ -130,6 +130,6 @@ def test_story_embed_cleans_google_news_source_and_avoids_redundant_fields() -> 
     primary = next(field for field in embed["fields"] if field["name"] == "Primary source")
     assert primary["value"] == "[Reuters](https://news.google.com/story)"
     assert not any(field["name"].startswith("More sources") for field in embed["fields"])
-    analysis = next(field for field in embed["fields"] if field["name"] == "Analysis sources")
+    analysis = next(field for field in embed["fields"] if field["name"] == "Additional sources")
     assert "Google News" not in analysis["value"]
     assert "Public record" in analysis["value"]

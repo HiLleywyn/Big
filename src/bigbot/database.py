@@ -205,6 +205,11 @@ CREATE INDEX idx_stories_presentation
     ON stories (presentation_version, publication_state, state);
 """
 
+FEED_SUMMARIZATION_SCHEMA = """
+ALTER TABLE feeds ADD COLUMN summarization_enabled INTEGER NOT NULL DEFAULT 1
+    CHECK (summarization_enabled IN (0, 1));
+"""
+
 MIGRATIONS = (
     (1, SCHEMA),
     (2, STORY_SCHEMA),
@@ -213,6 +218,7 @@ MIGRATIONS = (
     (5, STORY_ANALYSIS_SCHEMA),
     (6, GUILD_SETTINGS_SCHEMA),
     (7, PRESENTATION_SCHEMA),
+    (8, FEED_SUMMARIZATION_SCHEMA),
 )
 
 
@@ -276,6 +282,7 @@ class Database:
         created_by: int,
         default_tags: tuple[str, ...] = (),
         publisher: str = "",
+        summarization_enabled: bool = True,
     ) -> Feed:
         now = utc_now().isoformat()
         try:
@@ -284,8 +291,9 @@ class Database:
                 INSERT INTO feeds (
                     guild_id, forum_channel_id, name, kind, source, publisher,
                     interval_seconds, tag_ids_json, include_replies, include_reposts, next_poll_at,
-                    created_by, created_at, updated_at, default_tags_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_by, created_at, updated_at, default_tags_json,
+                    summarization_enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     guild_id,
@@ -303,6 +311,7 @@ class Database:
                     now,
                     now,
                     json.dumps(default_tags),
+                    int(summarization_enabled),
                 ),
             )
             await self._db().commit()
@@ -342,6 +351,14 @@ class Database:
         cursor = await self._db().execute(
             "UPDATE feeds SET state = ?, updated_at = ? WHERE id = ?",
             (state.value, utc_now().isoformat(), feed_id),
+        )
+        await self._db().commit()
+        return cursor.rowcount > 0
+
+    async def set_feed_summarization(self, feed_id: int, *, enabled: bool) -> bool:
+        cursor = await self._db().execute(
+            "UPDATE feeds SET summarization_enabled = ?, updated_at = ? WHERE id = ?",
+            (int(enabled), utc_now().isoformat(), feed_id),
         )
         await self._db().commit()
         return cursor.rowcount > 0
@@ -403,6 +420,7 @@ class Database:
         publisher: str,
         interval_seconds: int,
         default_tags: tuple[str, ...],
+        summarization_enabled: bool = True,
     ) -> Feed:
         now = utc_now().isoformat()
         await self._db().execute(
@@ -410,14 +428,15 @@ class Database:
             INSERT INTO feeds (
                 guild_id, forum_channel_id, name, kind, source, interval_seconds,
                 publisher, tag_ids_json, default_tags_json, include_replies, include_reposts,
-                next_poll_at, created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, 'rss', ?, ?, ?, '[]', ?, 0, 0, ?, 0, ?, ?)
+                next_poll_at, created_by, created_at, updated_at, summarization_enabled
+            ) VALUES (?, ?, ?, 'rss', ?, ?, ?, '[]', ?, 0, 0, ?, 0, ?, ?, ?)
             ON CONFLICT(guild_id, name) DO UPDATE SET
                 forum_channel_id = excluded.forum_channel_id,
                 source = excluded.source,
                 publisher = excluded.publisher,
                 interval_seconds = excluded.interval_seconds,
                 default_tags_json = excluded.default_tags_json,
+                summarization_enabled = excluded.summarization_enabled,
                 updated_at = excluded.updated_at
             """,
             (
@@ -431,6 +450,7 @@ class Database:
                 now,
                 now,
                 now,
+                int(summarization_enabled),
             ),
         )
         await self._db().commit()
@@ -790,12 +810,48 @@ class Database:
               AND cleared_at IS NULL
               AND discord_thread_id IS NOT NULL
               AND analysis_state IN ('disabled', 'failed')
+              AND EXISTS (
+                  SELECT 1
+                  FROM articles
+                  JOIN feeds ON feeds.id = articles.feed_id
+                  WHERE articles.story_id = stories.id
+                    AND feeds.summarization_enabled = 1
+              )
             ORDER BY last_updated_at DESC, id DESC
             LIMIT ?
             """,
             (limit,),
         )
         return [_story_from_row(row) async for row in cursor]
+
+    async def story_summarization_enabled(self, story_id: int) -> bool:
+        cursor = await self._db().execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM articles
+                JOIN feeds ON feeds.id = articles.feed_id
+                WHERE articles.story_id = ?
+                  AND feeds.summarization_enabled = 1
+            ) AS enabled
+            """,
+            (story_id,),
+        )
+        row = await cursor.fetchone()
+        return bool(row["enabled"] if row is not None else False)
+
+    async def clear_story_analysis(self, story_id: int) -> None:
+        now = utc_now().isoformat()
+        await self._db().execute(
+            """
+            UPDATE stories
+            SET analysis = NULL, analysis_state = 'disabled', analysis_error = NULL,
+                analysis_updated_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, story_id),
+        )
+        await self._db().commit()
 
     async def pending_stories_for_recovery(self, *, limit: int = 100) -> list[Story]:
         if not 1 <= limit <= 500:
@@ -1535,6 +1591,7 @@ def _feed_from_row(row: aiosqlite.Row) -> Feed:
         default_tags=tuple(str(value) for value in json.loads(str(row["default_tags_json"]))),
         failure_count=int(row["failure_count"]),
         publisher=str(row["publisher"]),
+        summarization_enabled=bool(row["summarization_enabled"]),
     )
 
 

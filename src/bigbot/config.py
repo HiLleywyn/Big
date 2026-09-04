@@ -23,6 +23,7 @@ class FeedSpec:
     default_tags: tuple[str, ...]
     interval_seconds: int
     forum_channel_id: int | None = None
+    summarization_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,10 @@ def load_app_config(path: Path) -> AppConfig:
                     _positive_int(forum_raw, f"feeds[{index}].forum_channel_id")
                     if forum_raw is not None
                     else None
+                ),
+                summarization_enabled=_yaml_boolean(
+                    item.get("summarization_enabled", True),
+                    f"feeds[{index}].summarization_enabled",
                 ),
             )
         )

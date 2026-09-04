@@ -6,7 +6,7 @@ dozens of overlapping feeds.
 
 No publisher is perfectly unbiased and no feed can guarantee that every claim is true. Use a
 mix of accountable reporting and direct primary sources. Big keeps every source link visible,
-separates uncertain claims in the story analysis, and clusters overlapping coverage into one
+separates uncertain claims in the story summary, and clusters overlapping coverage into one
 discussion.
 
 ## The 20 forum tags
@@ -107,15 +107,25 @@ when it fills a real coverage gap.
 
 1. Run `/news add-feed`.
 2. Choose the destination Forum Channel.
-3. Fill in the form:
+3. Choose `Summaries on` or `Summaries off` for this feed.
+4. Fill in the form:
    * `Feed name`: A specific internal name such as `Federal Reserve Press Releases`.
    * `Publisher`: The name readers should see, such as `Federal Reserve`.
    * `RSS or Atom URL`: Paste the exact HTTPS URL from the table.
    * `Poll minutes`: Use `15`, `30`, or `60` from the table.
    * `Forum tags`: Enter exact comma-separated tag names, such as `Economy, Markets`.
-4. Submit the form.
-5. Run `/news refresh` and select the feed.
-6. Run `/news feeds` and check that the feed has no error.
+5. Submit the form.
+6. Run `/news refresh` and select the feed.
+7. Run `/news feeds` and check that the feed has no error.
+
+Use `Summaries on` when the feed contains reporting that benefits from a combined factual digest.
+Use `Summaries off` for feeds where the original description should be shown as written. You can
+change this later in `/news feeds` by selecting the feed and using the summary setting button. The
+change applies the next time an affected story is created or updated.
+
+When several feeds report one event, Big still creates one story. If at least one source feed has
+summaries enabled, Big summarizes the complete set of stored sources. This prevents an enabled
+wire feed from ignoring a source just because that source feed has summaries disabled.
 
 The first poll is limited by `BIG_MAX_BACKFILL`, which defaults to 3. Older entries are recorded
 without creating a wall of old forum posts.
@@ -134,6 +144,14 @@ Then replace the two Discord IDs at the top of `config.yaml`:
 guild_id: 123456789012345678
 forum_channel_id: 123456789012345678
 polling_interval_seconds: 900
+
+feeds:
+  - name: PBS News Headlines
+    publisher: PBS News
+    url: https://www.pbs.org/newshour/feeds/rss/headlines
+    summarization_enabled: true
+    default_tags: [United States]
+    interval_seconds: 900
 ```
 
 To copy a Discord ID:
@@ -152,7 +170,7 @@ by source URL, so restarts do not duplicate them.
 Source priority chooses the headline and primary link when several publishers cover one story.
 It is not a truth score. Direct institutional sources can receive a high priority because they
 are original records of an action. Independent reporting still remains in the source list and is
-used in the complete story analysis.
+used in the complete story summary.
 
 ```yaml
 source_priorities:

@@ -534,7 +534,8 @@ class FeedService:
         allow_update_message: bool = True,
     ) -> str:
         articles = await self._database.story_articles(story.id)
-        if self._analyzer is not None:
+        summarization_enabled = await self._database.story_summarization_enabled(story.id)
+        if self._analyzer is not None and summarization_enabled:
             candidates = await self._database.relationship_candidates(
                 story,
                 since=utc_now() - self._window,
@@ -567,6 +568,18 @@ class FeedService:
                         "error_type": type(exc).__name__,
                     },
                 )
+        elif not summarization_enabled and (
+            story.analysis is not None or story.analysis_state is not AnalysisState.DISABLED
+        ):
+            await self._database.clear_story_analysis(story.id)
+            log.info(
+                "story summary disabled by feed settings",
+                extra={
+                    "event": "story_summary_disabled",
+                    "story_id": story.id,
+                    "source_count": len(articles),
+                },
+            )
         current = await self._database.get_story(story.id)
         if current is None:
             raise RuntimeError("story disappeared during finalization")

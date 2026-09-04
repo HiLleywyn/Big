@@ -87,37 +87,45 @@ BIG_DATABASE_PATH   SQLite path, default data/big.db
 BIG_HEALTH_PORT     Local health port, default 8787
 BIG_ARTICLE_MAX_BYTES Maximum HTML prefix read for message article analysis, default 4194304
 X_BEARER_TOKEN      Only required for official X feeds
-OPENROUTER_API_KEY  Optional, enables story-level OpenRouter analysis
+OPENROUTER_API_KEY  Optional, enables factual story summaries
 BIG_OPENROUTER_MODEL OpenRouter model, default deepseek/deepseek-v4-flash-0731
 BIG_AI_WEB_SEARCH   Allow OpenRouter web search, default true
 BIG_AI_ZDR          Require zero data retention routing, default true
 BIG_RELATED_STORY_LIMIT Maximum bounded relationship candidates, default 8
 ```
 
-### Story analysis
+### Story summaries
 
 When `OPENROUTER_API_KEY` is configured, Big creates one shared OpenRouter client for the
 `FeedService`. The client is closed with the service. RSS, Atom, and X all retain the same path:
 
 ```text
-feed adapter -> process_item -> normalize -> deduplicate -> cluster -> persist -> analyze -> publish
+feed adapter -> process_item -> normalize -> deduplicate -> cluster -> persist -> summarize -> publish
 ```
 
-Analysis always runs after deterministic clustering and reads every stored article in the story.
-It never decides whether two reports belong to the same story. A successful result is stored on
-the story and rendered in the existing Discord starter post. A failed result is recorded on the
-story and the deterministic summary is published or retained.
+Summarization always runs after deterministic clustering and reads every stored article in the
+story. It never decides whether two reports belong to the same story. A story is summarized when
+at least one contributing feed has `summarization_enabled: true`. Stories containing only feeds
+with summaries disabled use deterministic source text. A failed summary is recorded and never
+causes another Discord post to be created.
+
+The summary call uses the titles, descriptions, publishers, URLs, and dates already stored for the
+story. It makes one structured OpenRouter request per story finalization. It does not perform a
+second web research request. The prompt prohibits opinion, interpretation, implications, advice,
+unsupported causal claims, and invented certainty. Claims supported by only one outlet remain
+attributed to that outlet. The rendered result is organized into Summary, Key facts, Context,
+Unclear or disputed when needed, and Sources.
 
 OpenRouter receives a bounded list of recent published stories when relationship detection is
 enabled. Returned IDs are rejected unless they appeared in that exact list. Accepted direct
 relationships are stored once as an unordered pair, and both Discord starter posts receive a
 reciprocal thread link. Shared categories, tags, names, or places are not enough for a relationship.
 
-`BIG_AI_WEB_SEARCH=true` runs a bounded OpenRouter web research pass before the structured story
-analysis. Both calls use the same shared client and remain inside the same story finalization path.
-Structured JSON Schema output is required, citation links are checked against supplied articles
-and OpenRouter annotations, and every returned field is validated before persistence. Keep
-`BIG_AI_ZDR=true` unless you intentionally choose providers without zero data retention support.
+`BIG_AI_WEB_SEARCH=true` is used by the Fact Check command. Routine story summaries stay on the
+single inexpensive structured call described above. Structured JSON Schema output is required,
+citation links are checked against supplied articles, and every returned field is validated before
+persistence. Keep `BIG_AI_ZDR=true` unless you intentionally choose providers without zero data
+retention support.
 
 Server administrators can use `/news settings` to validate and save a model for their server.
 The saved model takes effect immediately and persists in SQLite across restarts. The environment
@@ -150,10 +158,14 @@ feeds:
   - name: PBS News Headlines
     publisher: PBS News
     url: https://www.pbs.org/newshour/feeds/rss/headlines
+    summarization_enabled: true
     default_tags: [United States]
 ```
 
-Each feed can override `forum_channel_id`. Default tags are combined with local automatic
+Each feed can override `forum_channel_id`. Set `summarization_enabled` to `true` or `false` for
+each feed. The same setting is available while adding a feed and from `/news feeds`. If reports
+from several feeds join one story, one enabled feed is enough to summarize the complete story
+using all of its sources. Default tags are combined with local automatic
 classification, but the publisher resolves names against the forum's current `available_tags`
 before sending anything. A required-tag forum fails safely when no configured tag exists.
 
@@ -205,8 +217,8 @@ Members need Manage Server to change feeds or clusters.
 ```
 
 Feed management uses Discord Components v2 with panels, forum channel selects, buttons, and
-organized forms. `add-feed` first asks for a Forum Channel, then opens a form for name, publisher,
-RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection panel with a confirm
+organized forms. `add-feed` asks for a Forum Channel and whether summaries should be enabled, then
+opens a form for name, publisher, RSS or Atom URL, polling interval, and tags. `remove-feed` opens a selection panel with a confirm
 step. `refresh` lets moderators refresh one feed or all feeds from the panel. `tags` checks the
 selected forum and can install the missing recommended tag names without deleting existing tags.
 

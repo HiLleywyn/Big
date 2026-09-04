@@ -40,40 +40,48 @@ feeds:
   - name: PBS News Headlines
     publisher: PBS News
     url: https://www.pbs.org/newshour/feeds/rss/headlines
+    summarization_enabled: true
     default_tags: [United States]
     interval_seconds: 900
   - name: BBC World
     publisher: BBC News
     url: https://feeds.bbci.co.uk/news/world/rss.xml
+    summarization_enabled: true
     default_tags: [World]
     interval_seconds: 900
   - name: Federal Reserve Press Releases
     publisher: Federal Reserve
     url: https://www.federalreserve.gov/feeds/press_all.xml
+    summarization_enabled: true
     default_tags: [Economy, Markets]
     interval_seconds: 1800
   - name: SEC Press Releases
     publisher: SEC
     url: https://www.sec.gov/news/pressreleases.rss
+    summarization_enabled: true
     default_tags: [Markets, Law]
     interval_seconds: 1800
   - name: ProPublica
     publisher: ProPublica
     url: https://www.propublica.org/feeds/propublica/main
+    summarization_enabled: true
     default_tags: [United States]
     interval_seconds: 1800
   - name: Ars Technica
     publisher: Ars Technica
     url: https://feeds.arstechnica.com/arstechnica/index
+    summarization_enabled: true
     default_tags: [Technology]
     interval_seconds: 1800
   - name: NASA News Releases
     publisher: NASA
     url: https://www.nasa.gov/news-release/feed/
+    summarization_enabled: false
     default_tags: [Science]
     interval_seconds: 3600
   - name: UN News
     publisher: UN News
     url: https://news.un.org/feed/subscribe/en/news/all/rss.xml
+    summarization_enabled: true
     default_tags: [World]
     interval_seconds: 1800

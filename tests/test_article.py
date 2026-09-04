@@ -191,7 +191,7 @@ def test_article_result_is_components_v2_with_story_links() -> None:
     container = view.children[0]
     assert isinstance(container, discord.ui.Container)
     rendered = str(container.to_component_dict())
-    assert "Useful context" in rendered
+    assert "Context" in rendered
     assert "https://bigif.org/news/story/7/" in rendered
     assert "https://discord.com/channels/1/70" in rendered
 

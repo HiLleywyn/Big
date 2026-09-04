@@ -358,7 +358,7 @@ def _story_embed(
                 f"- [{_publisher_label(label, url)}]({url})"
                 for label, url in unique_analysis_sources
             )
-            embed.add_field(name="Analysis sources", value=value[:1024], inline=False)
+            embed.add_field(name="Additional sources", value=value[:1024], inline=False)
     related = []
     for candidate in related_stories:
         if candidate.discord_thread_id is None:
