@@ -82,6 +82,11 @@ async def _dry_run(settings: Settings) -> None:
         retention_batch_size=config.retention.batch_size,
         analyzer=build_story_analyzer(settings),
         related_story_limit=settings.related_story_limit,
+        automatic_cluster_management=config.clustering.automatic_management,
+        cluster_merge_threshold=config.clustering.merge_threshold,
+        cluster_split_threshold=config.clustering.split_threshold,
+        cluster_maintenance_interval_seconds=(config.clustering.maintenance_interval_seconds),
+        cluster_maintenance_batch_size=config.clustering.maintenance_batch_size,
     )
 
     async def status() -> dict[str, object]:

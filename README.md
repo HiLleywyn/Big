@@ -196,6 +196,23 @@ A support gate requires agreement across multiple signals. A score alone cannot 
 with conflicting event verbs. The examples in the test suite cover paraphrased rate decisions,
 same-topic but distinct events, numerical conflicts, and unrelated stories.
 
+Automatic cluster management is enabled by default. Every maintenance pass reviews a bounded
+set of recent stories. It merges only story pairs that clear the stricter `merge_threshold` and
+splits only a source that has no supported match inside its current story. Borderline cases are
+left alone for moderators. A manual merge or split protects the affected story from automatic
+changes for seven days. All automatic decisions are recorded in `story_history` with their score
+and reason.
+
+`maintenance_interval_seconds` controls how often the review runs and
+`maintenance_batch_size` bounds the amount of recent data examined. The default pass performs at
+most five changes. Set `automatic_management: false` to keep clustering at ingestion only.
+
+The public API is the source for the Discord forum post and the website. Later reporting is
+stored in the existing story history and returned as a separate `updates` timeline. Discord keeps
+the original report in the starter post, lists updates in their own field, and posts major update
+replies when configured. The website reads the same timeline, so it changes as soon as the bot
+persists an update without a second publishing workflow.
+
 Canonical URL normalization removes common tracking parameters, fragments, default ports, and
 query ordering differences. Database uniqueness rules add protection across feed refreshes and
 process restarts.

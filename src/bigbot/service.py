@@ -63,6 +63,12 @@ class ProcessedItem:
     related_stories: tuple[Story, ...]
 
 
+@dataclass(frozen=True)
+class ClusterMaintenanceReport:
+    merged: int = 0
+    split: int = 0
+
+
 class FeedService:
     def __init__(
         self,
@@ -84,6 +90,11 @@ class FeedService:
         retention_batch_size: int = 25,
         analyzer: StoryAnalyzer | None = None,
         related_story_limit: int = 8,
+        automatic_cluster_management: bool = True,
+        cluster_merge_threshold: float = 0.82,
+        cluster_split_threshold: float = 0.45,
+        cluster_maintenance_interval_seconds: int = 1800,
+        cluster_maintenance_batch_size: int = 50,
     ) -> None:
         self._database = database
         self._sources = sources
@@ -106,6 +117,12 @@ class FeedService:
         self._retention_batch_size = retention_batch_size
         self._analyzer = analyzer
         self._related_story_limit = related_story_limit
+        self._automatic_cluster_management = automatic_cluster_management
+        self._cluster_merge_threshold = cluster_merge_threshold
+        self._cluster_split_threshold = cluster_split_threshold
+        self._cluster_maintenance_interval = timedelta(seconds=cluster_maintenance_interval_seconds)
+        self._cluster_maintenance_batch_size = cluster_maintenance_batch_size
+        self._next_cluster_maintenance = utc_now()
         self._feed_locks: dict[int, asyncio.Lock] = {}
         self._story_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
@@ -116,6 +133,12 @@ class FeedService:
             try:
                 await self._database.mark_stale_stories(utc_now() - self._stale_after)
                 await self.cleanup_old_stories()
+                if (
+                    self._automatic_cluster_management
+                    and utc_now() >= self._next_cluster_maintenance
+                ):
+                    await self.maintain_story_clusters()
+                    self._next_cluster_maintenance = utc_now() + self._cluster_maintenance_interval
                 for feed in await self._database.due_feeds(utc_now()):
                     try:
                         await self.poll_feed(feed.id)
@@ -164,6 +187,143 @@ class FeedService:
                 },
             )
         return cleared
+
+    async def maintain_story_clusters(self) -> ClusterMaintenanceReport:
+        if not self._automatic_cluster_management:
+            return ClusterMaintenanceReport()
+        merged = 0
+        split = 0
+        operation_limit = max(1, min(5, self._cluster_maintenance_batch_size // 10))
+        for _ in range(operation_limit):
+            split_result = await self._automatic_split_once()
+            if split_result is None:
+                break
+            original, new_story, article = split_result
+            await self._finalize_split(original, new_story, article)
+            split += 1
+        for _ in range(operation_limit - split):
+            merge_result = await self._automatic_merge_once()
+            if merge_result is None:
+                break
+            target, source = merge_result
+            await self._finalize_merge(target, source)
+            merged += 1
+        log.info(
+            "automatic cluster maintenance completed",
+            extra={
+                "event": "cluster_maintenance_completed",
+                "merged": merged,
+                "split": split,
+            },
+        )
+        return ClusterMaintenanceReport(merged=merged, split=split)
+
+    async def _automatic_split_once(self) -> tuple[Story, Story, Article] | None:
+        async with self._cluster_lock:
+            stories = await self._database.stories_for_cluster_maintenance(
+                since=utc_now() - self._window,
+                limit=self._cluster_maintenance_batch_size,
+            )
+            protected_since = utc_now() - timedelta(days=7)
+            for story in stories:
+                articles = await self._database.story_articles(story.id)
+                if len(articles) < 2 or await self._database.has_recent_manual_cluster_action(
+                    (story.id,), since=protected_since
+                ):
+                    continue
+                outlier = self._clusterer.find_outlier(
+                    articles,
+                    threshold=self._cluster_split_threshold,
+                )
+                if outlier is None:
+                    continue
+                result = await self._database.split_article(
+                    outlier.article.id,
+                    actor_id=None,
+                    action="automatic_split",
+                    detail={
+                        "score": round(outlier.score, 4),
+                        "reason": outlier.reason,
+                    },
+                )
+                log.info(
+                    "story source automatically split",
+                    extra={
+                        "event": "story_automatic_split",
+                        "story_id": story.id,
+                        "article_id": outlier.article.id,
+                        "cluster_score": round(outlier.score, 4),
+                    },
+                )
+                return result
+        return None
+
+    async def _automatic_merge_once(self) -> tuple[Story, Story] | None:
+        async with self._cluster_lock:
+            stories = await self._database.stories_for_cluster_maintenance(
+                since=utc_now() - self._window,
+                limit=self._cluster_maintenance_batch_size,
+            )
+            protected_since = utc_now() - timedelta(days=7)
+            article_sets = {
+                story.id: await self._database.story_articles(story.id) for story in stories
+            }
+            best: tuple[float, Story, Story] | None = None
+            for index, left in enumerate(stories):
+                for right in stories[index + 1 :]:
+                    if (left.guild_id, left.forum_channel_id) != (
+                        right.guild_id,
+                        right.forum_channel_id,
+                    ):
+                        continue
+                    if await self._database.has_recent_manual_cluster_action(
+                        (left.id, right.id), since=protected_since
+                    ):
+                        continue
+                    score = self._clusterer.story_merge_score(
+                        article_sets[left.id], article_sets[right.id]
+                    )
+                    if score < self._cluster_merge_threshold:
+                        continue
+                    target, source = self._canonical_merge_order(
+                        left,
+                        right,
+                        len(article_sets[left.id]),
+                        len(article_sets[right.id]),
+                    )
+                    if best is None or score > best[0]:
+                        best = score, target, source
+            if best is None:
+                return None
+            score, target, source = best
+            merged = await self._database.merge_stories(
+                target.id,
+                source.id,
+                actor_id=None,
+                action="automatic_merge",
+                detail={"score": round(score, 4)},
+            )
+            log.info(
+                "stories automatically merged",
+                extra={
+                    "event": "story_automatic_merge",
+                    "story_id": target.id,
+                    "source_story_id": source.id,
+                    "cluster_score": round(score, 4),
+                },
+            )
+            return merged
+
+    @staticmethod
+    def _canonical_merge_order(
+        left: Story,
+        right: Story,
+        left_count: int,
+        right_count: int,
+    ) -> tuple[Story, Story]:
+        left_rank = (left.discord_thread_id is not None, left_count, -left.id)
+        right_rank = (right.discord_thread_id is not None, right_count, -right.id)
+        return (left, right) if left_rank >= right_rank else (right, left)
 
     def stop(self) -> None:
         self._stopping.set()
@@ -413,6 +573,7 @@ class FeedService:
                         articles,
                         articles[-1],
                         await self._database.related_stories(story.id),
+                        await self._database.story_updates(story.id),
                         post_update=False,
                     )
                 except PublishError:
@@ -584,10 +745,13 @@ class FeedService:
         if current is None:
             raise RuntimeError("story disappeared during finalization")
         related = await self._database.related_stories(current.id)
+        updates = await self._database.story_updates(current.id)
         creating = current.discord_thread_id is None
         try:
             if creating:
-                receipt = await self._publisher.create_story(feed, current, articles, related)
+                receipt = await self._publisher.create_story(
+                    feed, current, articles, related, updates
+                )
                 await self._database.mark_story_published(
                     current.id,
                     thread_id=receipt.thread_id,
@@ -603,6 +767,7 @@ class FeedService:
                     articles,
                     article,
                     related,
+                    updates,
                     post_update=post_update,
                 )
         except PublishError as exc:
@@ -648,6 +813,7 @@ class FeedService:
                     articles,
                     articles[-1],
                     reciprocal,
+                    await self._database.story_updates(related.id),
                     post_update=False,
                 )
             except PublishError:
@@ -677,7 +843,14 @@ class FeedService:
         )
 
     async def merge_stories(self, target_id: int, source_id: int, *, actor_id: int) -> Story:
-        target, source = await self._database.merge_stories(target_id, source_id, actor_id=actor_id)
+        async with self._cluster_lock:
+            target, source = await self._database.merge_stories(
+                target_id, source_id, actor_id=actor_id
+            )
+        await self._finalize_merge(target, source)
+        return (await self._database.get_story(target.id)) or target
+
+    async def _finalize_merge(self, target: Story, source: Story) -> None:
         articles = await self._database.story_articles(target.id)
         if articles:
             article = articles[-1]
@@ -694,10 +867,16 @@ class FeedService:
                 allow_update_message=False,
             )
         await self._publisher.mark_merged(source, target)
-        return (await self._database.get_story(target.id)) or target
 
     async def split_article(self, article_id: int, *, actor_id: int) -> Story:
-        original, story, article = await self._database.split_article(article_id, actor_id=actor_id)
+        async with self._cluster_lock:
+            original, story, article = await self._database.split_article(
+                article_id, actor_id=actor_id
+            )
+        await self._finalize_split(original, story, article)
+        return (await self._database.get_story(story.id)) or story
+
+    async def _finalize_split(self, original: Story, story: Story, article: Article) -> None:
         if article.feed_id is None:
             raise ValueError("article feed no longer exists")
         feed = await self._database.get_feed(article.feed_id)
@@ -724,7 +903,6 @@ class FeedService:
                         significant=True,
                         allow_update_message=False,
                     )
-        return (await self._database.get_story(story.id)) or story
 
     async def reprocess_article(self, article_id: int) -> str:
         article = await self._database.get_article(article_id)

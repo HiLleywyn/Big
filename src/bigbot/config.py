@@ -31,6 +31,11 @@ class ClusteringOptions:
     threshold: float = 0.68
     window_hours: int = 72
     stale_after_hours: int = 96
+    automatic_management: bool = True
+    merge_threshold: float = 0.82
+    split_threshold: float = 0.45
+    maintenance_interval_seconds: int = 1800
+    maintenance_batch_size: int = 50
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,18 @@ class Settings:
             raise ConfigurationError("clustering.window_hours must be between 1 and 720")
         if not 1 <= clustering.stale_after_hours <= 8760:
             raise ConfigurationError("clustering.stale_after_hours must be between 1 and 8760")
+        if not clustering.threshold <= clustering.merge_threshold <= 0.98:
+            raise ConfigurationError(
+                "clustering.merge_threshold must be at least threshold and no more than 0.98"
+            )
+        if not 0.2 <= clustering.split_threshold < clustering.threshold:
+            raise ConfigurationError("clustering.split_threshold must be between 0.2 and threshold")
+        if not 300 <= clustering.maintenance_interval_seconds <= 86400:
+            raise ConfigurationError(
+                "clustering.maintenance_interval_seconds must be between 300 and 86400"
+            )
+        if not 10 <= clustering.maintenance_batch_size <= 250:
+            raise ConfigurationError("clustering.maintenance_batch_size must be between 10 and 250")
         retention = self.app_config.retention
         if retention.clear_after_days is not None and not 1 <= retention.clear_after_days <= 3650:
             raise ConfigurationError("retention.clear_after_days must be between 1 and 3650")
@@ -253,6 +270,26 @@ def load_app_config(path: Path) -> AppConfig:
             ),
             stale_after_hours=_positive_int(
                 clustering_raw.get("stale_after_hours", 96), "clustering.stale_after_hours"
+            ),
+            automatic_management=_yaml_boolean(
+                clustering_raw.get("automatic_management", True),
+                "clustering.automatic_management",
+            ),
+            merge_threshold=_number(
+                clustering_raw.get("merge_threshold", 0.82),
+                "clustering.merge_threshold",
+            ),
+            split_threshold=_number(
+                clustering_raw.get("split_threshold", 0.45),
+                "clustering.split_threshold",
+            ),
+            maintenance_interval_seconds=_positive_int(
+                clustering_raw.get("maintenance_interval_seconds", 1800),
+                "clustering.maintenance_interval_seconds",
+            ),
+            maintenance_batch_size=_positive_int(
+                clustering_raw.get("maintenance_batch_size", 50),
+                "clustering.maintenance_batch_size",
             ),
         ),
         updates=UpdateOptions(

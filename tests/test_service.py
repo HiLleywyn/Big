@@ -15,6 +15,7 @@ from bigbot.domain import (
     PublishReceipt,
     Story,
     StoryState,
+    StoryUpdate,
 )
 from bigbot.enrichment import EnrichmentError, StoryAnalysis
 from bigbot.normalization import normalize_item
@@ -52,6 +53,7 @@ class FakePublisher:
         story: Story,
         articles: list[Article],
         related_stories: list[Story],
+        updates: list[StoryUpdate],
     ) -> PublishReceipt:
         self.created += 1
         self.created_story_ids.append(story.id)
@@ -67,6 +69,7 @@ class FakePublisher:
         articles: list[Article],
         article: Article,
         related_stories: list[Story],
+        updates: list[StoryUpdate],
         *,
         post_update: bool,
     ) -> int | None:
@@ -471,6 +474,103 @@ async def test_moderator_can_merge_then_split_story_sources(tmp_path) -> None:
     assert split.id not in {target.id, source.id}
     assert len(await database.story_articles(split.id)) == 1
     assert len(await database.story_articles(target.id)) == 1
+    await database.close()
+
+
+async def test_automatic_maintenance_merges_strong_duplicate_stories(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    feed = await _feed(database)
+    items = (
+        _item(
+            "one",
+            "Federal Reserve cuts interest rates by 25 basis points",
+            "Reuters",
+            "https://news.example/one",
+        ),
+        _item(
+            "two",
+            "Federal Reserve cuts interest rates by 25 basis points",
+            "AP",
+            "https://news.example/two",
+        ),
+    )
+    stories: list[Story] = []
+    for index, item in enumerate(items, start=1):
+        story, _ = await database.create_story_with_article(
+            feed=feed,
+            item=item,
+            normalized=normalize_item(item, fallback_publisher=item.publisher or "Wire"),
+            tags=("Markets",),
+            state=StoryState.NEW,
+            priority=index,
+        )
+        await database.mark_story_published(
+            story.id, thread_id=1000 + index, message_id=2000 + index
+        )
+        stories.append((await database.get_story(story.id)) or story)
+
+    report = await service.maintain_story_clusters()
+
+    assert report.merged == 1
+    assert report.split == 0
+    active = await database.candidate_stories(
+        guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert len(active) == 1
+    assert len(await database.story_articles(active[0].id)) == 2
+    assert publisher.merged == 1
+    await database.close()
+
+
+async def test_automatic_maintenance_splits_clear_story_outlier(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    feed = await _feed(database)
+    first = _item(
+        "one",
+        "Central bank cuts interest rates",
+        "Wire",
+        "https://news.example/rates",
+    )
+    story, _ = await database.create_story_with_article(
+        feed=feed,
+        item=first,
+        normalized=normalize_item(first, fallback_publisher="Wire"),
+        tags=("Markets",),
+        state=StoryState.NEW,
+        priority=1,
+    )
+    await database.mark_story_published(story.id, thread_id=1001, message_id=2001)
+    current = (await database.get_story(story.id)) or story
+    unrelated = _item(
+        "two",
+        "Space company launches a lunar rocket",
+        "Wire",
+        "https://news.example/rocket",
+    )
+    await database.attach_article(
+        story=current,
+        feed=feed,
+        item=unrelated,
+        normalized=normalize_item(unrelated, fallback_publisher="Wire"),
+        tags=("Science",),
+        state=StoryState.UPDATED,
+        priority=1,
+        significant=False,
+    )
+
+    report = await service.maintain_story_clusters()
+
+    assert report.split == 1
+    active = await database.candidate_stories(
+        guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert len(active) == 2
+    article_counts = [len(await database.story_articles(item.id)) for item in active]
+    assert sorted(article_counts) == [1, 1]
+    assert publisher.created == 1
+    assert publisher.updated == 1
     await database.close()
 
 

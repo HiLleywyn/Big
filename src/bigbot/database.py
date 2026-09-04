@@ -17,6 +17,7 @@ from bigbot.domain import (
     PublicationState,
     Story,
     StoryState,
+    StoryUpdate,
     parse_time,
     utc_now,
 )
@@ -929,6 +930,62 @@ class Database:
         )
         return [_article_from_row(row) async for row in cursor]
 
+    async def stories_for_cluster_maintenance(self, *, since: datetime, limit: int) -> list[Story]:
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM stories
+            WHERE state != 'merged' AND cleared_at IS NULL
+              AND publication_state != 'uncertain' AND last_updated_at >= ?
+            ORDER BY last_updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (since.isoformat(), limit),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def has_recent_manual_cluster_action(
+        self, story_ids: tuple[int, ...], *, since: datetime
+    ) -> bool:
+        if not story_ids:
+            return False
+        placeholders = ",".join("?" for _ in story_ids)
+        cursor = await self._db().execute(
+            f"""
+            SELECT 1 FROM story_history
+            WHERE story_id IN ({placeholders})
+              AND action IN ('manual_merge', 'manual_split', 'manual_split_out')
+              AND created_at >= ?
+            LIMIT 1
+            """,
+            (*story_ids, since.isoformat()),
+        )
+        return await cursor.fetchone() is not None
+
+    async def story_updates(self, story_id: int) -> list[StoryUpdate]:
+        cursor = await self._db().execute(
+            """
+            SELECT articles.*, story_history.action AS history_action,
+                   story_history.created_at AS history_created_at
+            FROM story_history
+            JOIN articles ON articles.id = story_history.article_id
+            WHERE story_history.story_id = ?
+              AND articles.story_id = story_history.story_id
+              AND story_history.action IN ('major_update', 'source_added')
+            ORDER BY story_history.created_at, story_history.id
+            """,
+            (story_id,),
+        )
+        updates: list[StoryUpdate] = []
+        async for row in cursor:
+            updates.append(
+                StoryUpdate(
+                    article=_article_from_row(row),
+                    kind=str(row["history_action"]),
+                    recorded_at=parse_time(str(row["history_created_at"])) or utc_now(),
+                )
+            )
+        return updates
+
     async def relationship_candidates(
         self,
         story: Story,
@@ -1154,7 +1211,13 @@ class Database:
         return result
 
     async def merge_stories(
-        self, target_id: int, source_id: int, *, actor_id: int
+        self,
+        target_id: int,
+        source_id: int,
+        *,
+        actor_id: int | None,
+        action: str = "manual_merge",
+        detail: dict[str, object] | None = None,
     ) -> tuple[Story, Story]:
         if target_id == source_id:
             raise ValueError("a story cannot be merged into itself")
@@ -1174,6 +1237,38 @@ class Database:
         try:
             await database.execute(
                 "UPDATE articles SET story_id = ? WHERE story_id = ?", (target_id, source_id)
+            )
+            await database.execute(
+                "UPDATE story_history SET story_id = ? WHERE story_id = ?",
+                (target_id, source_id),
+            )
+            relationship_cursor = await database.execute(
+                """
+                SELECT story_id_low, story_id_high FROM story_relationships
+                WHERE story_id_low = ? OR story_id_high = ?
+                """,
+                (source_id, source_id),
+            )
+            async for relationship in relationship_cursor:
+                neighbor = (
+                    int(relationship["story_id_high"])
+                    if int(relationship["story_id_low"]) == source_id
+                    else int(relationship["story_id_low"])
+                )
+                if neighbor == target_id:
+                    continue
+                low, high = sorted((target_id, neighbor))
+                await database.execute(
+                    """
+                    INSERT OR IGNORE INTO story_relationships
+                        (story_id_low, story_id_high, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (low, high, utc_now().isoformat()),
+                )
+            await database.execute(
+                "DELETE FROM story_relationships WHERE story_id_low = ? OR story_id_high = ?",
+                (source_id, source_id),
             )
             articles = await self.story_articles(target_id)
             primary_story = source if source.primary_priority > target.primary_priority else target
@@ -1222,9 +1317,9 @@ class Database:
             )
             await self._insert_history(
                 target_id,
-                "manual_merge",
+                action,
                 actor_id=actor_id,
-                detail={"source_story_id": source_id},
+                detail={"source_story_id": source_id, **(detail or {})},
             )
             await database.commit()
         except Exception:
@@ -1235,7 +1330,12 @@ class Database:
         ) or source
 
     async def split_article(
-        self, article_id: int, *, actor_id: int
+        self,
+        article_id: int,
+        *,
+        actor_id: int | None,
+        action: str = "manual_split",
+        detail: dict[str, object] | None = None,
     ) -> tuple[Story, Story, Article]:
         article = await self.get_article(article_id)
         if article is None or article.story_id is None:
@@ -1323,10 +1423,18 @@ class Database:
                 ),
             )
             await self._insert_history(
-                original.id, "manual_split_out", article_id=article.id, actor_id=actor_id
+                original.id,
+                f"{action}_out",
+                article_id=article.id,
+                actor_id=actor_id,
+                detail=detail,
             )
             await self._insert_history(
-                new_id, "manual_split", article_id=article.id, actor_id=actor_id
+                new_id,
+                action,
+                article_id=article.id,
+                actor_id=actor_id,
+                detail=detail,
             )
             await database.commit()
         except Exception:

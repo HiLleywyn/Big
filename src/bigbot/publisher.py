@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import discord
 
 from bigbot.analysis_format import analysis_display
-from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story
+from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story, StoryUpdate
 from bigbot.security import forum_title, neutralize_mentions, plain_text, safe_external_link
 
 log = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class ForumPublisher(Protocol):
         story: Story,
         articles: list[Article],
         related_stories: list[Story],
+        updates: list[StoryUpdate],
     ) -> PublishReceipt: ...
 
     async def update_story(
@@ -39,6 +40,7 @@ class ForumPublisher(Protocol):
         articles: list[Article],
         article: Article,
         related_stories: list[Story],
+        updates: list[StoryUpdate],
         *,
         post_update: bool,
     ) -> int | None: ...
@@ -63,6 +65,7 @@ class DiscordForumPublisher:
         story: Story,
         articles: list[Article],
         related_stories: list[Story],
+        updates: list[StoryUpdate],
     ) -> PublishReceipt:
         channel = await self._forum(feed.forum_channel_id, feed.guild_id)
         tags = self._resolve_tags(channel, story.tags, feed.tag_ids)
@@ -76,6 +79,7 @@ class DiscordForumPublisher:
                         story,
                         articles,
                         related_stories,
+                        updates,
                         public_site_url=self._public_site_url,
                     ),
                     file=icon,
@@ -96,6 +100,7 @@ class DiscordForumPublisher:
         articles: list[Article],
         article: Article,
         related_stories: list[Story],
+        updates: list[StoryUpdate],
         *,
         post_update: bool,
     ) -> int | None:
@@ -119,6 +124,7 @@ class DiscordForumPublisher:
                 story,
                 articles,
                 related_stories,
+                updates,
                 public_site_url=self._public_site_url,
             )
             if not any(item.filename == BRAND_ICON_FILENAME for item in starter.attachments):
@@ -248,6 +254,7 @@ class DryRunForumPublisher:
         story: Story,
         articles: list[Article],
         related_stories: list[Story],
+        updates: list[StoryUpdate],
     ) -> PublishReceipt:
         self._next_id += 1
         log.info(
@@ -262,6 +269,7 @@ class DryRunForumPublisher:
         articles: list[Article],
         article: Article,
         related_stories: list[Story],
+        updates: list[StoryUpdate],
         *,
         post_update: bool,
     ) -> int | None:
@@ -299,6 +307,7 @@ def _story_embed(
     story: Story,
     articles: list[Article],
     related_stories: list[Story],
+    updates: list[StoryUpdate],
     *,
     public_site_url: str = "https://bigif.org",
 ) -> discord.Embed:
@@ -359,6 +368,19 @@ def _story_embed(
                 for label, url in unique_analysis_sources
             )
             embed.add_field(name="Additional sources", value=value[:1024], inline=False)
+    if updates:
+        update_lines = []
+        for update in updates[-5:]:
+            article = update.article
+            link = safe_external_link(article.url)
+            label = plain_text(article.title, limit=130)
+            if link:
+                label = f"[{label}]({link})"
+            timestamp = int((article.published_at or update.recorded_at).timestamp())
+            update_lines.append(
+                f"- **{plain_text(article.publisher, limit=80)}:** {label}  <t:{timestamp}:R>"
+            )
+        embed.add_field(name="Updates", value="\n".join(update_lines)[:1024], inline=False)
     related = []
     for candidate in related_stories:
         if candidate.discord_thread_id is None:
@@ -389,8 +411,18 @@ def _story_description(story: Story) -> str:
 def _update_embed(article: Article) -> discord.Embed:
     link = safe_external_link(article.url)
     embed = discord.Embed(
-        title=f"Update from {plain_text(article.publisher, limit=180)}",
-        description=plain_text(article.description, limit=3000),
+        title="Story update",
+        description=(
+            f"**{plain_text(article.publisher, limit=180)}**\n"
+            f"[{plain_text(article.title, limit=240)}]({link})\n\n"
+            f"{plain_text(article.description, limit=2600)}"
+            if link
+            else (
+                f"**{plain_text(article.publisher, limit=180)}**\n"
+                f"{plain_text(article.title, limit=240)}\n\n"
+                f"{plain_text(article.description, limit=2600)}"
+            )
+        ),
         url=link or None,
         color=discord.Color.orange(),
         timestamp=article.published_at,

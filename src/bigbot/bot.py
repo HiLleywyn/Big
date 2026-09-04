@@ -121,6 +121,11 @@ class BigBot(commands.Bot):
             retention_batch_size=config.retention.batch_size,
             analyzer=self.enricher,
             related_story_limit=self.settings.related_story_limit,
+            automatic_cluster_management=config.clustering.automatic_management,
+            cluster_merge_threshold=config.clustering.merge_threshold,
+            cluster_split_threshold=config.clustering.split_threshold,
+            cluster_maintenance_interval_seconds=(config.clustering.maintenance_interval_seconds),
+            cluster_maintenance_batch_size=config.clustering.maintenance_batch_size,
         )
         self.article_extractor = ArticleExtractor(
             timeout_seconds=self.settings.http_timeout_seconds,
@@ -864,6 +869,11 @@ class AnalysisSettingsView(OwnedLayoutView):
             f"Model: `{_clean_text(model, 200)}`" if model else "OpenRouter is not configured.",
             "Summaries use the reporting stored with each story.",
             "Each feed controls whether summaries are enabled.",
+            (
+                "Automatic story merge and split: on"
+                if bot.settings.app_config.clustering.automatic_management
+                else "Automatic story merge and split: off"
+            ),
         ]
         if notice:
             lines.insert(0, notice)
@@ -1968,6 +1978,12 @@ async def _status_lines(bot: BigBot, interaction: discord.Interaction) -> tuple[
         if retention.clear_after_days is not None
         else "off"
     )
+    clustering = bot.settings.app_config.clustering
+    automatic_text = (
+        f"on, every {clustering.maintenance_interval_seconds // 60} minutes"
+        if clustering.automatic_management
+        else "off"
+    )
     return (
         f"{active}/{len(feeds)} feeds active",
         (
@@ -1975,6 +1991,7 @@ async def _status_lines(bot: BigBot, interaction: discord.Interaction) -> tuple[
             f"{counts['developing']} developing, {counts['updated']} updated"
         ),
         f"Retention: {retention_text}",
+        f"Automatic story management: {automatic_text}",
         f"Feed errors: {len(errors)}",
     )
 

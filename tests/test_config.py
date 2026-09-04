@@ -64,6 +64,11 @@ forum_channel_id: 2
 clustering:
   threshold: 0.7
   window_hours: 48
+  automatic_management: true
+  merge_threshold: 0.86
+  split_threshold: 0.4
+  maintenance_interval_seconds: 900
+  maintenance_batch_size: 75
 feeds:
   - name: Wire
     publisher: Wire Service
@@ -76,6 +81,11 @@ feeds:
     config = load_app_config(path)
     assert config.clustering.threshold == 0.7
     assert config.clustering.window_hours == 48
+    assert config.clustering.automatic_management
+    assert config.clustering.merge_threshold == 0.86
+    assert config.clustering.split_threshold == 0.4
+    assert config.clustering.maintenance_interval_seconds == 900
+    assert config.clustering.maintenance_batch_size == 75
     assert config.feeds[0].default_tags == ("World",)
     assert not config.feeds[0].summarization_enabled
 

@@ -7,6 +7,11 @@ clustering:
   threshold: 0.68
   window_hours: 72
   stale_after_hours: 96
+  automatic_management: true
+  merge_threshold: 0.82
+  split_threshold: 0.45
+  maintenance_interval_seconds: 1800
+  maintenance_batch_size: 50
 
 update_behavior:
   post_major_updates: true

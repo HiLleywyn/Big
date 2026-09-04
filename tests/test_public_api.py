@@ -34,7 +34,7 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
         published,
     )
     normalized = normalize_item(item, fallback_publisher=feed.publisher)
-    story, _ = await database.create_story_with_article(
+    story, original = await database.create_story_with_article(
         feed=feed,
         item=item,
         normalized=normalized,
@@ -50,6 +50,25 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
             "**Analysis sources**\n- [Election office](https://example.gov/results)"
         ),
         related_story_ids=(),
+    )
+    update_item = FeedItem(
+        "wire-2",
+        "Election officials publish an initial count",
+        "https://example.com/story-update",
+        "The first official count has been published.",
+        "Wire",
+        datetime(2026, 9, 2, 13, 0, tzinfo=UTC),
+    )
+    latest_story = (await database.get_story(story.id)) or story
+    await database.attach_article(
+        story=latest_story,
+        feed=feed,
+        item=update_item,
+        normalized=normalize_item(update_item, fallback_publisher=feed.publisher),
+        tags=("Politics", "World"),
+        state=StoryState.DEVELOPING,
+        priority=90,
+        significant=True,
     )
 
     payload = await build_story_feed(
@@ -67,6 +86,17 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert result["tags"] == ["Politics", "World"]
     assert result["published_at"] == published.isoformat()
     assert result["sources"][0]["publisher"] == "Wire"
+    assert result["original"]["url"] == original.url
+    assert result["updates"] == [
+        {
+            "publisher": "Wire",
+            "title": "Election officials publish an initial count",
+            "url": "https://example.com/story-update",
+            "published_at": "2026-09-02T13:00:00+00:00",
+            "kind": "major",
+            "recorded_at": result["updates"][0]["recorded_at"],
+        }
+    ]
     assert "Analysis sources" not in result["analysis"]
     assert result["analysis_sources"] == [
         {"publisher": "Election office", "url": "https://example.gov/results"}

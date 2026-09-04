@@ -158,6 +158,13 @@ class Story:
 
 
 @dataclass(frozen=True)
+class StoryUpdate:
+    article: Article
+    kind: str
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
 class PublishReceipt:
     thread_id: int
     message_id: int

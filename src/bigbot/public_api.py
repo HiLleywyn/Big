@@ -40,7 +40,7 @@ async def build_story_feed(
     items = [await _story_item(database, story, public_site_url) for story in visible]
     next_cursor = _encode_cursor(visible[-1]) if has_more and visible else None
     return {
-        "version": 2,
+        "version": 3,
         "generated_at": utc_now().isoformat(),
         "total": await database.count_published_stories(search=request.search, tags=request.tags),
         "has_more": has_more,
@@ -57,7 +57,7 @@ async def build_story_detail(
     if story is None:
         return None
     return {
-        "version": 2,
+        "version": 3,
         "generated_at": utc_now().isoformat(),
         "story": await _story_item(database, story, public_site_url),
     }
@@ -65,6 +65,7 @@ async def build_story_detail(
 
 async def _story_item(database: Database, story: Story, public_site_url: str) -> dict[str, object]:
     articles = await database.story_articles(story.id)
+    updates = await database.story_updates(story.id)
     related = await database.related_stories(story.id)
     primary = _primary_article(story, articles)
     displayed_analysis = analysis_display(
@@ -91,7 +92,16 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
         "updated_at": story.last_updated_at.isoformat(),
         "discord_url": discord_url,
         "web_url": _story_url(public_site_url, story.id),
+        "original": _source_item(primary) if primary is not None else None,
         "sources": [_source_item(article) for article in articles],
+        "updates": [
+            {
+                **_source_item(update.article),
+                "kind": "major" if update.kind == "major_update" else "source",
+                "recorded_at": update.recorded_at.isoformat(),
+            }
+            for update in updates
+        ],
         "related": [
             {
                 "id": candidate.id,
