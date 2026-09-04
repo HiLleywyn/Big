@@ -547,6 +547,69 @@ async def test_story_summary_accepts_provider_json_code_fence() -> None:
     await client.aclose()
 
 
+async def test_sparse_story_uses_grounded_research_when_structured_json_fails() -> None:
+    calls = 0
+    cited_url = "https://example.gov/statement"
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        if calls == 1:
+            return httpx2.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "Officials confirmed the allocation during Thursday's event. "
+                                    "The fund contains about $1 billion."
+                                ),
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
+                                            "url": cited_url,
+                                            "title": "Official statement",
+                                            "content": "Officials confirmed the allocation.",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx2.Response(
+            200,
+            json={"choices": [{"message": {"content": "not valid json"}}]},
+        )
+
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=10,
+        client=client,
+    )
+    sparse = article(1, "Reuters")
+    sparse.description = sparse.title
+
+    result = await enricher.analyze_story(story(1), [sparse], [])
+
+    assert calls == 2
+    assert "Officials confirmed the allocation" in result.text
+    assert f"[example.gov]({cited_url})" in result.text
+    assert result.related_story_ids == ()
+    await client.aclose()
+
+
 async def test_model_override_is_validated_and_applied_per_guild() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":

@@ -124,6 +124,7 @@ class OpenRouterEnricher:
             raise EnrichmentError("story analysis requires at least one article")
         allowed_relationship_ids = {candidate.id for candidate in relationship_candidates}
         annotation_links: tuple[str, ...] = ()
+        web_evidence: dict[str, object] | None = None
         analysis_input: dict[str, object] = {
             "story_id": story.id,
             "focus_article_id": focus_article_id,
@@ -133,8 +134,8 @@ class OpenRouterEnricher:
             ],
         }
         if self._web_search and _needs_web_evidence(articles):
-            evidence, annotation_links = await self._research_story(story, articles)
-            analysis_input["web_evidence"] = evidence
+            web_evidence, annotation_links = await self._research_story(story, articles)
+            analysis_input["web_evidence"] = web_evidence
         payload: dict[str, Any] = {
             "model": self.model_for(story.guild_id),
             "messages": [
@@ -257,6 +258,17 @@ class OpenRouterEnricher:
             IndexError,
             TypeError,
         ) as exc:
+            fallback = _fallback_research_summary(web_evidence, title=story.title)
+            if fallback:
+                log.warning(
+                    "OpenRouter structured story response was invalid; using grounded research",
+                    extra={"event": "story_analysis_research_fallback", "story_id": story.id},
+                )
+                return StoryAnalysis(
+                    text=_append_analysis_sources(fallback, articles, annotation_links),
+                    related_story_ids=(),
+                    latest_update=None,
+                )
             raise EnrichmentError("OpenRouter returned an invalid structured response") from exc
         result = _validate_result(parsed, allowed_relationship_ids)
         allowed_links = {
@@ -616,6 +628,37 @@ def _decode_json_content(content: object) -> object:
     if fenced is not None:
         value = fenced.group(1).strip()
     return json.loads(value)
+
+
+def _fallback_research_summary(evidence: dict[str, object] | None, *, title: str) -> str | None:
+    """Render cited research notes when a provider fails to return valid JSON."""
+    if not evidence:
+        return None
+    candidates: list[str] = []
+    notes = evidence.get("notes")
+    if isinstance(notes, str):
+        candidates.append(notes)
+    sources = evidence.get("sources")
+    if isinstance(sources, list):
+        candidates.extend(
+            str(source.get("excerpt") or "") for source in sources if isinstance(source, dict)
+        )
+    for candidate in candidates:
+        cleaned = re.sub(r"https?://\S+", " ", candidate)
+        cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
+        cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
+        cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        if len(cleaned) > 800:
+            boundary = cleaned.rfind(". ", 0, 800)
+            cleaned = cleaned[: boundary + 1 if boundary >= 120 else 800].rstrip()
+        try:
+            summary = _clean_sentence(cleaned, "research summary", 800)
+        except EnrichmentError:
+            continue
+        if not repeats_reference(summary, title):
+            return _render_analysis(summary, (), (), ())
+    return None
 
 
 def _article_input(article: Article) -> dict[str, object]:
