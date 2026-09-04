@@ -77,6 +77,11 @@ def story_update_detail(title: str, description: str, *, limit: int = 500) -> st
     return detail
 
 
+def repeats_reference(value: str, reference: str) -> bool:
+    """Return whether copy restates a known headline without adding information."""
+    return _is_redundant(value, (reference,))
+
+
 def visible_story_updates(
     primary: Article | None, updates: Sequence[StoryUpdate]
 ) -> tuple[StoryUpdate, ...]:

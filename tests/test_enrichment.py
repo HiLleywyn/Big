@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx2
@@ -412,6 +413,76 @@ async def test_story_summary_uses_one_request_when_web_search_is_enabled() -> No
     result = await enricher.analyze_story(story(1), [article(1, "Wire")], [])
     assert len(requests) == 1
     assert "[Wire](https://wire.example/story)" in result.text
+    await client.aclose()
+
+
+async def test_headline_only_story_uses_bounded_web_search_and_citations() -> None:
+    requests: list[dict[str, object]] = []
+    cited_url = "https://example.gov/statement"
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        assert body["tools"] == [
+            {
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "engine": "parallel",
+                    "mode": "turbo",
+                    "max_results": 4,
+                    "max_uses": 2,
+                    "max_total_results": 6,
+                    "max_characters": 2000,
+                },
+            }
+        ]
+        assert body["max_tool_calls"] == 2
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "Officials confirmed the allocation on Thursday.",
+                                    "key_facts": [],
+                                    "useful_context": [],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [],
+                                    "latest_update": None,
+                                }
+                            ),
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url_citation": {"url": cited_url},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="deepseek/deepseek-v4-flash-0731",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=15,
+        client=client,
+    )
+    sparse = article(1, "Wire")
+    sparse = replace(sparse, description=sparse.title)
+
+    result = await enricher.analyze_story(story(1), [sparse], [])
+
+    assert len(requests) == 1
+    assert "Officials confirmed the allocation" in result.text
+    assert f"[example.gov]({cited_url})" in result.text
+    assert "Key facts" not in result.text
     await client.aclose()
 
 
