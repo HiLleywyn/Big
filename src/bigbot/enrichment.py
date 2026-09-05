@@ -687,6 +687,20 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
     cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    lowered_candidate = cleaned.casefold()
+    if any(
+        marker in lowered_candidate
+        for marker in (
+            "getty images",
+            "shopgma",
+            "successfully added",
+            "sign up for",
+            "cookie policy",
+            "reuters related",
+            "associated press related",
+        )
+    ):
+        return None
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned)]
     usable: list[str] = []
     for sentence in sentences:

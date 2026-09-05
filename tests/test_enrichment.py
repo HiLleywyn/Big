@@ -616,11 +616,22 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
                                     {
                                         "type": "url_citation",
                                         "url_citation": {
+                                            "url": "https://example.com/contaminated",
+                                            "title": "Page chrome",
+                                            "content": (
+                                                "Industry, California, on June 2, 2026. "
+                                                "Aaron Schwartz/Reuters Related coverage follows."
+                                            ),
+                                        },
+                                    },
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
                                             "url": cited_url,
                                             "title": "Official statement",
                                             "content": "Officials confirmed the allocation.",
                                         },
-                                    }
+                                    },
                                 ],
                             }
                         }
