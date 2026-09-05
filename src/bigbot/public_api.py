@@ -6,7 +6,13 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
+from bigbot.analysis_format import (
+    AnalysisSections,
+    analysis_display,
+    analysis_sections,
+    story_update_detail,
+    visible_story_updates,
+)
 from bigbot.database import Database
 from bigbot.domain import AnalysisState, Article, Story, WeeklySummary, parse_time, utc_now
 from bigbot.normalization import normalize_url
@@ -131,16 +137,17 @@ async def _latest_weekly_summary_item(
     summary = await database.latest_weekly_summary()
     if summary is None:
         return None
-    stories: list[Story] = []
+    stories: list[tuple[Story, int]] = []
     for story_id in summary.story_ids:
         story = await database.get_published_story(story_id)
         if story is not None:
-            stories.append(story)
+            articles = await database.story_articles(story.id)
+            stories.append((story, len(articles)))
     return _weekly_summary_item(summary, stories, public_site_url)
 
 
 def _weekly_summary_item(
-    summary: WeeklySummary, stories: list[Story], public_site_url: str
+    summary: WeeklySummary, stories: list[tuple[Story, int]], public_site_url: str
 ) -> dict[str, object]:
     discord_url = (
         f"https://discord.com/channels/{summary.guild_id}/{summary.discord_thread_id}"
@@ -157,44 +164,34 @@ def _weekly_summary_item(
         "discord_url": discord_url,
         "web_url": f"{public_site_url.rstrip('/')}/news/",
         "stories": [
-            {
-                "id": story.id,
-                "title": forum_title(story.title),
-                "summary": _summary_text(story),
-                "tags": list(story.tags),
-                "web_url": _story_url(public_site_url, story.id),
-                "discord_url": (
-                    f"https://discord.com/channels/{story.guild_id}/{story.discord_thread_id}"
-                    if story.discord_thread_id is not None
-                    else None
-                ),
-            }
-            for story in stories
+            _weekly_story_item(story, source_count, public_site_url)
+            for story, source_count in stories
         ],
     }
 
 
-def _summary_text(story: Story) -> str:
+def _weekly_story_item(story: Story, source_count: int, public_site_url: str) -> dict[str, object]:
+    sections = _analysis_sections(story)
+    return {
+        "id": story.id,
+        "title": forum_title(story.title),
+        "summary": sections.summary or story.summary,
+        "key_facts": list(sections.key_facts),
+        "uncertainty": list(sections.uncertainty),
+        "state": story.state.value,
+        "source_count": source_count,
+        "tags": list(story.tags),
+        "web_url": _story_url(public_site_url, story.id),
+    }
+
+
+def _analysis_sections(story: Story) -> AnalysisSections:
     value = (
         story.analysis
         if story.analysis_state is AnalysisState.READY and story.analysis
         else story.summary
     )
-    body = analysis_display(value, title=story.title).body
-    lines: list[str] = []
-    in_summary = False
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        heading = line.replace("**", "").casefold()
-        if heading == "summary":
-            in_summary = True
-            continue
-        if in_summary and heading in {"key facts", "context", "unclear or disputed"}:
-            break
-        if in_summary and line:
-            lines.append(line.removeprefix("- "))
-    result = " ".join(lines).strip() or story.summary
-    return result[:500].rstrip()
+    return analysis_sections(value, title=story.title)
 
 
 def _encode_cursor(story: Story) -> str:

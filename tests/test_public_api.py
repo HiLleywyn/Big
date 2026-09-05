@@ -136,7 +136,12 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     weekly_item = with_weekly["weekly_summary"]
     assert isinstance(weekly_item, dict)
     assert weekly_item["discord_url"] == "https://discord.com/channels/10/60"
-    assert weekly_item["stories"][0]["id"] == story.id
+    weekly_story = weekly_item["stories"][0]
+    assert weekly_story["id"] == story.id
+    assert weekly_story["web_url"] == f"https://bigif.org/news/story/{story.id}/"
+    assert weekly_story["source_count"] == 2
+    assert weekly_story["key_facts"] == ["Polls have closed."]
+    assert "discord_url" not in weekly_story
 
     detail = await build_story_detail(
         database, story_id=story.id, public_site_url="https://bigif.org"

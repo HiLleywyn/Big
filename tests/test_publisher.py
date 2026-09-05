@@ -11,8 +11,14 @@ from bigbot.domain import (
     Story,
     StoryState,
     StoryUpdate,
+    WeeklySummary,
 )
-from bigbot.publisher import BRAND_ICON_URI, _story_embed
+from bigbot.publisher import (
+    BRAND_ICON_URI,
+    _embed_character_count,
+    _story_embed,
+    _weekly_summary_embeds,
+)
 
 
 def _story(story_id: int, title: str, thread_id: int) -> Story:
@@ -54,6 +60,101 @@ def test_story_embed_renders_analysis_and_related_thread_link() -> None:
     assert embed["footer"] == {"text": "Published", "icon_url": BRAND_ICON_URI}
     assert embed["timestamp"] == current.first_published_at.isoformat()  # type: ignore[union-attr]
     assert embed["url"] == "https://bigif.org/news/story/1/"
+
+
+def test_weekly_summary_uses_full_cards_and_only_big_story_links() -> None:
+    now = datetime.now(UTC)
+    story = replace(
+        _story(1, "Central bank changes its policy", 101),
+        tags=("Markets", "Economy"),
+        analysis=(
+            "**Summary**\nThe central bank changed its benchmark rate after its policy meeting. "
+            "Officials said the new rate takes effect on Monday.\n\n"
+            "**Key facts**\n- The benchmark rate changed by 25 basis points.\n"
+            "- The vote was unanimous.\n\n"
+            "**Analysis sources**\n- [Wire](https://publisher.example/article)"
+        ),
+    )
+    weekly = WeeklySummary(
+        id=1,
+        guild_id=1,
+        forum_channel_id=2,
+        week_start=now,
+        week_end=now,
+        title="Weekly Summary",
+        overview="The week's largest stories.",
+        story_ids=(story.id,),
+        discord_thread_id=500,
+        discord_starter_message_id=501,
+        delivery_state=DeliveryState.POSTED,
+        delivery_error=None,
+        generated_at=now,
+        updated_at=now,
+    )
+
+    embeds = _weekly_summary_embeds(
+        weekly,
+        [story],
+        source_counts={story.id: 3},
+        public_site_url="https://bigif.org",
+    )
+    card = embeds[1].to_dict()
+    rendered = str(card)
+
+    assert card["url"] == "https://bigif.org/news/story/1/"
+    assert "Officials said the new rate takes effect on Monday." in card["description"]
+    assert "..." not in rendered
+    assert "Key facts" in {field["name"] for field in card["fields"]}
+    assert "3 sources" in rendered
+    assert "https://bigif.org/news/story/1/" in rendered
+    assert "publisher.example" not in rendered
+
+
+def test_weekly_summary_keeps_all_eight_stories_within_discord_budget() -> None:
+    now = datetime.now(UTC)
+    base = _story(1, "A significant international development with a detailed headline", 101)
+    long_fact = (
+        "Officials published a detailed verified finding with dates, figures, and context. " * 4
+    )
+    stories = [
+        replace(
+            base,
+            id=index,
+            title=f"{base.title} {index}",
+            analysis=(
+                f"**Summary**\n{long_fact}\n\n**Key facts**\n- {long_fact}\n- {long_fact}\n\n"
+                f"**Unclear or disputed**\n- {long_fact}"
+            ),
+        )
+        for index in range(1, 9)
+    ]
+    weekly = WeeklySummary(
+        id=1,
+        guild_id=1,
+        forum_channel_id=2,
+        week_start=now,
+        week_end=now,
+        title="Weekly Summary",
+        overview="The week's largest stories.",
+        story_ids=tuple(story.id for story in stories),
+        discord_thread_id=500,
+        discord_starter_message_id=501,
+        delivery_state=DeliveryState.POSTED,
+        delivery_error=None,
+        generated_at=now,
+        updated_at=now,
+    )
+
+    embeds = _weekly_summary_embeds(
+        weekly,
+        stories,
+        source_counts={story.id: 3 for story in stories},
+        public_site_url="https://bigif.org",
+    )
+
+    assert len(embeds) == 9
+    assert sum(_embed_character_count(embed) for embed in embeds) <= 5900
+    assert all("..." not in str(embed.to_dict()) for embed in embeds)
 
 
 def test_story_embed_separates_analysis_sources_from_body() -> None:

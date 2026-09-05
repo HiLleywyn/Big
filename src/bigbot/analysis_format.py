@@ -41,6 +41,14 @@ class AnalysisDisplay:
     sources: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True)
+class AnalysisSections:
+    summary: str
+    key_facts: tuple[str, ...]
+    context: tuple[str, ...]
+    uncertainty: tuple[str, ...]
+
+
 def analysis_display(value: str, *, title: str = "") -> AnalysisDisplay:
     """Separate verified citations from the user-facing analysis sections."""
     body: list[str] = []
@@ -65,6 +73,35 @@ def analysis_display(value: str, *, title: str = "") -> AnalysisDisplay:
     return AnalysisDisplay(
         body=_deduplicate_body(formatted, title=title),
         sources=tuple(sources[:12]),
+    )
+
+
+def analysis_sections(value: str, *, title: str = "") -> AnalysisSections:
+    """Return the verified display copy as reusable structured sections."""
+    body = analysis_display(value, title=title).body
+    collected: dict[str, list[str]] = {
+        "summary": [],
+        "key facts": [],
+        "context": [],
+        "unclear or disputed": [],
+    }
+    current = "summary"
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = line.replace("*", "").removesuffix(":").casefold()
+        if heading in collected:
+            current = heading
+            continue
+        clean = re.sub(r"^[-*•]\s+", "", line).strip()
+        if clean:
+            collected[current].append(clean)
+    return AnalysisSections(
+        summary=" ".join(collected["summary"]).strip(),
+        key_facts=tuple(collected["key facts"]),
+        context=tuple(collected["context"]),
+        uncertainty=tuple(collected["unclear or disputed"]),
     )
 
 

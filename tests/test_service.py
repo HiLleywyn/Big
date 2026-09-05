@@ -92,9 +92,13 @@ class FakePublisher:
         self.deleted += 1
 
     async def publish_weekly_summary(
-        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+        self,
+        feed: Feed,
+        summary: WeeklySummary,
+        stories: list[Story],
+        source_counts: dict[int, int],
     ) -> PublishReceipt:
-        del feed, stories
+        del feed, stories, source_counts
         self.weekly_published.append(summary.id)
         return PublishReceipt(
             summary.discord_thread_id or 9000,

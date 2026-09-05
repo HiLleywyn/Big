@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Protocol
 
 import discord
 
-from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
+from bigbot.analysis_format import (
+    analysis_display,
+    analysis_sections,
+    story_update_detail,
+    visible_story_updates,
+)
 from bigbot.domain import (
     AnalysisState,
     Article,
@@ -64,7 +70,11 @@ class ForumPublisher(Protocol):
     async def delete_story(self, story: Story) -> None: ...
 
     async def publish_weekly_summary(
-        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+        self,
+        feed: Feed,
+        summary: WeeklySummary,
+        stories: list[Story],
+        source_counts: dict[int, int],
     ) -> PublishReceipt: ...
 
     async def unpin_weekly_summary(self, summary: WeeklySummary) -> None: ...
@@ -229,9 +239,18 @@ class DiscordForumPublisher:
             raise _publish_error("delete old forum story", exc) from exc
 
     async def publish_weekly_summary(
-        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+        self,
+        feed: Feed,
+        summary: WeeklySummary,
+        stories: list[Story],
+        source_counts: dict[int, int],
     ) -> PublishReceipt:
-        embed = _weekly_summary_embed(summary, stories, public_site_url=self._public_site_url)
+        embeds = _weekly_summary_embeds(
+            summary,
+            stories,
+            source_counts=source_counts,
+            public_site_url=self._public_site_url,
+        )
         content = f"**WEEKLY SUMMARY**  |  <t:{int(summary.week_end.timestamp())}:D>"
         if summary.discord_thread_id is None or summary.discord_starter_message_id is None:
             forum = await self._forum(feed.forum_channel_id, feed.guild_id)
@@ -242,7 +261,7 @@ class DiscordForumPublisher:
                     result = await forum.create_thread(
                         name=forum_title(summary.title),
                         content=content,
-                        embed=embed,
+                        embeds=embeds,
                         file=icon,
                         applied_tags=tags,
                         auto_archive_duration=1440,
@@ -271,7 +290,7 @@ class DiscordForumPublisher:
                 try:
                     await starter.edit(
                         content=content,
-                        embed=embed,
+                        embeds=embeds,
                         attachments=[*starter.attachments, icon],
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
@@ -280,7 +299,7 @@ class DiscordForumPublisher:
             else:
                 await starter.edit(
                     content=content,
-                    embed=embed,
+                    embeds=embeds,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
         except discord.HTTPException as exc:
@@ -421,9 +440,13 @@ class DryRunForumPublisher:
         )
 
     async def publish_weekly_summary(
-        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+        self,
+        feed: Feed,
+        summary: WeeklySummary,
+        stories: list[Story],
+        source_counts: dict[int, int],
     ) -> PublishReceipt:
-        del feed, stories
+        del feed, stories, source_counts
         self._next_id += 1
         thread_id = summary.discord_thread_id or self._next_id
         message_id = summary.discord_starter_message_id or self._next_id
@@ -591,53 +614,120 @@ def _update_embed(article: Article, *, detail: str | None = None) -> discord.Emb
     return embed
 
 
-def _weekly_summary_embed(
+def _weekly_summary_embeds(
     summary: WeeklySummary,
     stories: list[Story],
     *,
+    source_counts: dict[int, int],
     public_site_url: str,
-) -> discord.Embed:
-    sections = [plain_text(summary.overview, limit=500)]
-    for index, story in enumerate(stories, start=1):
-        title = forum_title(story.title)
-        link = _web_story_url(public_site_url, story.id)
-        detail = _weekly_story_summary(story)
-        section = f"**{index}. [{title}]({link})**\n{detail}"
-        if len("\n\n".join((*sections, section))) > 3900:
-            break
-        sections.append(section)
-    embed = discord.Embed(
+) -> list[discord.Embed]:
+    overview = discord.Embed(
         title=summary.title,
-        description="\n\n".join(sections),
+        description=plain_text(summary.overview, limit=500),
         url=f"{public_site_url.rstrip('/')}/news/",
         color=discord.Color.orange(),
         timestamp=summary.generated_at,
     )
-    embed.set_footer(text="Week ending", icon_url=BRAND_ICON_URI)
-    return embed
+    overview.set_footer(text="Week ending", icon_url=BRAND_ICON_URI)
+    story_embeds = [
+        _weekly_story_embed(
+            index,
+            story,
+            source_count=source_counts.get(story.id, 0),
+            public_site_url=public_site_url,
+        )
+        for index, story in enumerate(stories, start=1)
+    ]
+    if sum(_embed_character_count(item) for item in (overview, *story_embeds)) > 5900:
+        story_embeds = [
+            _weekly_story_embed(
+                index,
+                story,
+                source_count=source_counts.get(story.id, 0),
+                public_site_url=public_site_url,
+                compact=True,
+            )
+            for index, story in enumerate(stories, start=1)
+        ]
+    return [overview, *story_embeds]
 
 
-def _weekly_story_summary(story: Story) -> str:
-    source = (
+def _weekly_story_embed(
+    index: int,
+    story: Story,
+    *,
+    source_count: int,
+    public_site_url: str,
+    compact: bool = False,
+) -> discord.Embed:
+    value = (
         story.analysis
         if story.analysis_state is AnalysisState.READY and story.analysis
         else story.summary
     )
-    body = analysis_display(source, title=story.title).body
-    lines: list[str] = []
-    in_summary = False
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        heading = line.replace("**", "").casefold()
-        if heading == "summary":
-            in_summary = True
-            continue
-        if in_summary and heading in {"key facts", "context", "unclear or disputed"}:
+    sections = analysis_sections(value, title=story.title)
+    summary = _complete_excerpt(sections.summary or story.summary, limit=220 if compact else 300)
+    embed = discord.Embed(
+        title=f"{index}. {forum_title(story.title)}",
+        description=f"**Summary**\n{summary}",
+        url=_web_story_url(public_site_url, story.id),
+        color=_state_color(story),
+    )
+    fact_limit = 100 if compact else 150
+    fact_count = 1 if compact else 2
+    facts = [_complete_excerpt(fact, limit=fact_limit) for fact in sections.key_facts[:fact_count]]
+    if facts:
+        embed.add_field(
+            name="Key facts", value="\n".join(f"• {fact}" for fact in facts), inline=False
+        )
+    if sections.uncertainty and not compact:
+        embed.add_field(
+            name="Unclear or disputed",
+            value=_complete_excerpt(sections.uncertainty[0], limit=150),
+            inline=False,
+        )
+    tags = (
+        ", ".join(tag for tag in story.tags if tag.casefold() != story.state.value.casefold())
+        or "General"
+    )
+    tags = plain_text(tags, limit=40 if compact else 80)
+    count_label = f"{source_count} source{'s' if source_count != 1 else ''}"
+    embed.add_field(
+        name="At a glance",
+        value=f"{story.state.value.title()} | {count_label} | {tags}",
+        inline=False,
+    )
+    embed.add_field(
+        name="Read the full story",
+        value=f"[Big If True]({_web_story_url(public_site_url, story.id)})",
+        inline=False,
+    )
+    return embed
+
+
+def _complete_excerpt(value: str, *, limit: int) -> str:
+    clean = plain_text(value, limit=2000).strip()
+    if len(clean) <= limit:
+        return clean
+    complete = re.split(r"(?<=[.!?])\s+", clean)
+    selected: list[str] = []
+    for sentence in complete:
+        if selected and len(" ".join((*selected, sentence))) > limit:
             break
-        if in_summary and line:
-            lines.append(line.removeprefix("- "))
-    value = " ".join(lines).strip() or plain_text(story.summary, limit=320)
-    return plain_text(value, limit=320)
+        if not selected and len(sentence) > limit:
+            words = sentence[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+            return f"{words}." if words else sentence
+        selected.append(sentence)
+    return " ".join(selected).strip() or clean
+
+
+def _embed_character_count(embed: discord.Embed) -> int:
+    data = embed.to_dict()
+    total = len(str(data.get("title", ""))) + len(str(data.get("description", "")))
+    total += len(str(data.get("footer", {}).get("text", "")))
+    for field in data.get("fields", []):
+        total += len(str(field.get("name", ""))) + len(str(field.get("value", "")))
+    return total
 
 
 def _state_color(story: Story) -> discord.Color:

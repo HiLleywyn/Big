@@ -135,6 +135,7 @@ class FeedService:
         self._weekly_summary_timezone = ZoneInfo(weekly_summary_timezone)
         self._weekly_summary_max_stories = weekly_summary_max_stories
         self._next_weekly_check = utc_now()
+        self._weekly_summary_first_check = True
         self._feed_locks: dict[int, asyncio.Lock] = {}
         self._story_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
@@ -152,7 +153,8 @@ class FeedService:
                     await self.maintain_story_clusters()
                     self._next_cluster_maintenance = utc_now() + self._cluster_maintenance_interval
                 if self._weekly_summary_enabled and utc_now() >= self._next_weekly_check:
-                    await self.publish_due_weekly_summaries()
+                    await self.publish_due_weekly_summaries(force=self._weekly_summary_first_check)
+                    self._weekly_summary_first_check = False
                     self._next_weekly_check = utc_now() + timedelta(minutes=5)
                 for feed in await self._database.due_feeds(utc_now()):
                     try:
@@ -270,8 +272,16 @@ class FeedService:
                 overview=overview,
                 story_ids=tuple(story.id for story in stories),
             )
+            source_counts = {
+                story.id: len(await self._database.story_articles(story.id)) for story in stories
+            }
             try:
-                receipt = await self._publisher.publish_weekly_summary(feed, summary, stories)
+                receipt = await self._publisher.publish_weekly_summary(
+                    feed,
+                    summary,
+                    stories,
+                    source_counts,
+                )
             except PublishError as exc:
                 await self._database.mark_weekly_summary_failed(
                     summary.id,
