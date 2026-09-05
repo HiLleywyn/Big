@@ -93,6 +93,7 @@ BIG_OPENROUTER_MODEL OpenRouter model, default deepseek/deepseek-v4-flash-0731
 BIG_AI_WEB_SEARCH   Allow OpenRouter web search, default true
 BIG_AI_ZDR          Require zero data retention routing, default true
 BIG_RELATED_STORY_LIMIT Maximum bounded relationship candidates, default 8
+BIG_QUALITY_GATE_ENABLED Withhold low-impact stories before Discord publication, default true
 ```
 
 ### Story summaries
@@ -127,6 +128,11 @@ single inexpensive structured call described above. Structured JSON Schema outpu
 citation links are checked against supplied articles, and every returned field is validated before
 persistence. Keep `BIG_AI_ZDR=true` unless you intentionally choose providers without zero data
 retention support.
+
+With `BIG_QUALITY_GATE_ENABLED=true`, the same structured summary request also makes a bounded
+publish or withhold decision. Deterministic rules always reject commentary, opinion, podcasts,
+newsletters, routine funding and valuation announcements, minor sports items, and similar filler.
+Rejected stories remain stored for deduplication but do not create Discord threads or website pages.
 
 Server administrators can use `/news settings` to validate and save a model for their server.
 The saved model takes effect immediately and persists in SQLite across restarts. The environment

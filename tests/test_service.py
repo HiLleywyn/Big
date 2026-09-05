@@ -136,7 +136,8 @@ class FakeAnalyzer:
         return StoryAnalysis(
             text=(
                 "**Summary**\n"
-                f"Analysis from {len(articles)} sources.\n\n"
+                f"Available reporting from {len(articles)} sources confirms concrete details "
+                "about the event.\n\n"
                 "**Key facts**\n"
                 "- Available reports describe the event."
             ),
@@ -197,6 +198,7 @@ async def _service(
     *,
     analyzer: FakeAnalyzer | None = None,
     sources: dict[FeedKind, FakeSource] | None = None,
+    quality_gate_enabled: bool = False,
 ) -> tuple[Database, FeedService]:
     database = Database(path)
     await database.connect()
@@ -211,6 +213,7 @@ async def _service(
         clustering_window_hours=72,
         stale_after_hours=96,
         analyzer=analyzer,
+        quality_gate_enabled=quality_gate_enabled,
     )
     return database, service
 
@@ -253,6 +256,39 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     updates = await database.story_updates(stored.id)
     assert len(updates) == 1
     assert updates[0].detail == "Officials confirmed additional details."
+    await database.close()
+
+
+async def test_newsworthiness_gate_withholds_routine_story_before_discord(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer()
+    database, service = await _service(
+        tmp_path / "big.db",
+        publisher,
+        FakeSource(()),
+        analyzer=analyzer,
+        quality_gate_enabled=True,
+    )
+    feed = await _feed(database)
+
+    outcome = await service.process_item(
+        feed,
+        _item(
+            "routine-1",
+            "AI startup Crusoe valued at $30 billion after new funding round",
+            "Wire",
+            "https://example.com/routine-1",
+        ),
+    )
+
+    assert outcome == "skipped"
+    assert publisher.created == 0
+    stories = await database.candidate_stories(
+        guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert len(stories) == 1
+    assert stories[0].discord_thread_id is None
+    await service.close()
     await database.close()
 
 
@@ -714,7 +750,7 @@ async def test_openrouter_failure_uses_same_finalizer_without_duplicate_post(tmp
     )
     feed = await _feed(database)
     item = _item("one", "A confirmed event occurred", "Wire", "https://news.example/event")
-    assert await service.process_item(feed, item) == "new_stories"
+    assert await service.process_item(feed, item) == "skipped"
     story = (
         await database.candidate_stories(
             guild_id=1, forum_channel_id=2, since=datetime(2000, 1, 1, tzinfo=UTC)
@@ -723,11 +759,39 @@ async def test_openrouter_failure_uses_same_finalizer_without_duplicate_post(tmp
     article = (await database.story_articles(story.id))[0]
     assert story.analysis_state.value == "failed"
     assert story.analysis_error == "OpenRouter unavailable"
+    assert story.publication_state.value == "failed"
+    assert article.delivery_state.value == "skipped"
+    assert publisher.created == 0
+    analyzer.fail = False
+    assert await service.reprocess_article(article.id) == "new_stories"
     assert publisher.created == 1
-    assert await service.reprocess_article(article.id) == "updated_stories"
-    assert publisher.created == 1
-    assert publisher.updated == 1
+    assert publisher.updated == 0
     assert len(analyzer.calls) == 2
+    await database.close()
+
+
+async def test_quality_gate_allows_grounded_feed_detail_when_analysis_fails(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(fail=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = FeedItem(
+        external_id="grounded",
+        title="Court publishes a final ruling",
+        url="https://news.example/ruling",
+        summary=(
+            "The court upheld the law in a 6-3 decision issued Friday after hearing the case "
+            "during its spring term."
+        ),
+        author="Wire",
+        published_at=datetime.now(UTC),
+        publisher="Wire",
+    )
+
+    assert await service.process_item(feed, item) == "new_stories"
+    assert publisher.created == 1
     await database.close()
 
 

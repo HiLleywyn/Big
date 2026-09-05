@@ -229,7 +229,7 @@ def test_story_embed_keeps_summary_that_adds_context_to_headline() -> None:
     assert "**Key facts**" not in embed["description"]
 
 
-def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
+def test_story_embed_shows_original_source_and_time_in_timeline() -> None:
     story = _story(1, "Clean title", 101)
     published = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)
     article = Article(
@@ -254,8 +254,10 @@ def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
         delivery_error=None,
     )
     embed = _story_embed(story, [article], [], []).to_dict()
-    primary = next(field for field in embed["fields"] if field["name"] == "Primary source")
-    assert "<t:" not in primary["value"]
+    timeline = next(field for field in embed["fields"] if field["name"] == "Timeline")
+    assert "**Original report**" in timeline["value"]
+    assert "[Wire](https://example.com/story)" in timeline["value"]
+    assert "<t:1788363000:F>" in timeline["value"]
     assert embed["timestamp"] == published.isoformat()
 
 
@@ -295,10 +297,11 @@ def test_story_embed_separates_updates_from_original_report() -> None:
 
     embed = _story_embed(story, [original, article], [], [update]).to_dict()
 
-    updates = next(field for field in embed["fields"] if field["name"] == "Updates")
-    assert "New confirmed figures were published." in updates["value"]
-    assert "Wire: Officials publish a new count" in updates["value"]
-    assert "<t:1788363000:R>" in updates["value"]
+    timeline = next(field for field in embed["fields"] if field["name"] == "Timeline")
+    assert "Original report" in timeline["value"]
+    assert "New confirmed figures were published." in timeline["value"]
+    assert "[Wire](https://example.com/update)" in timeline["value"]
+    assert "<t:1788363000:F>" in timeline["value"]
 
 
 def test_story_embed_hides_repeated_transport_copy_from_updates() -> None:
@@ -337,6 +340,9 @@ def test_story_embed_hides_repeated_transport_copy_from_updates() -> None:
     embed = _story_embed(story, [original, duplicate], [], [update]).to_dict()
 
     assert all(field["name"] != "Updates" for field in embed["fields"])
+    timeline = next(field for field in embed["fields"] if field["name"] == "Timeline")
+    assert "Original report" in timeline["value"]
+    assert "**Update**" not in timeline["value"]
 
 
 def test_story_embed_cleans_google_news_source_and_avoids_redundant_fields() -> None:
@@ -373,8 +379,8 @@ def test_story_embed_cleans_google_news_source_and_avoids_redundant_fields() -> 
     )
     embed = _story_embed(story, [article], [], []).to_dict()
     assert embed["title"] == "Pacific update"
-    primary = next(field for field in embed["fields"] if field["name"] == "Primary source")
-    assert primary["value"] == "[Reuters](https://news.google.com/story)"
+    timeline = next(field for field in embed["fields"] if field["name"] == "Timeline")
+    assert "[Reuters](https://news.google.com/story)" in timeline["value"]
     assert not any(field["name"].startswith("More sources") for field in embed["fields"])
     analysis = next(field for field in embed["fields"] if field["name"] == "Additional sources")
     assert "Google News" not in analysis["value"]

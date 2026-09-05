@@ -99,10 +99,12 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert result["published_at"] == published.isoformat()
     assert result["sources"][0]["publisher"] == "Wire"
     assert result["original"]["url"] == original.url
+    assert result["original"]["description"] == "Votes are being counted."
     assert result["updates"] == [
         {
             "publisher": "Wire",
             "title": "Election officials publish an initial count",
+            "description": "The first official count has been published.",
             "url": "https://example.com/story-update",
             "published_at": "2026-09-02T13:00:00+00:00",
             "detail": "Officials confirmed that the first count is now available.",

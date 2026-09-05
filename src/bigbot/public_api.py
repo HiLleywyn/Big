@@ -47,7 +47,7 @@ async def build_story_feed(
     items = [await _story_item(database, story, public_site_url) for story in visible]
     next_cursor = _encode_cursor(visible[-1]) if has_more and visible else None
     return {
-        "version": 5,
+        "version": 6,
         "generated_at": utc_now().isoformat(),
         "total": await database.count_published_stories(search=request.search, tags=request.tags),
         "has_more": has_more,
@@ -65,7 +65,7 @@ async def build_story_detail(
     if story is None:
         return None
     return {
-        "version": 5,
+        "version": 6,
         "generated_at": utc_now().isoformat(),
         "story": await _story_item(database, story, public_site_url),
     }
@@ -248,6 +248,7 @@ def _source_item(article: Article) -> dict[str, object]:
     return {
         "publisher": publisher_label(article.publisher, article.url),
         "title": forum_title(article.title),
+        "description": story_update_detail(article.title, article.description, limit=1000),
         "url": safe_external_link(article.url),
         "published_at": (
             article.published_at.isoformat() if article.published_at is not None else None

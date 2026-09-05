@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from bigbot.analysis_format import analysis_sections, repeats_reference
 from bigbot.classification import TAG_CATALOG, StoryClassifier
 from bigbot.clustering import StoryClusterer
 from bigbot.database import Database
@@ -20,13 +21,14 @@ from bigbot.domain import (
     PublicationState,
     Story,
     StoryState,
+    WeeklyCandidate,
     utc_now,
 )
 from bigbot.enrichment import EnrichmentError, StoryAnalyzer
 from bigbot.feeds.base import FeedFetchError, FeedSource
 from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
-from bigbot.weekly import select_weekly_stories
+from bigbot.weekly import is_publication_worthy, select_weekly_stories
 
 log = logging.getLogger(__name__)
 PRESENTATION_VERSION = 10
@@ -102,6 +104,7 @@ class FeedService:
         weekly_summary_hour: int = 12,
         weekly_summary_timezone: str = "America/Chicago",
         weekly_summary_max_stories: int = 8,
+        quality_gate_enabled: bool = False,
     ) -> None:
         self._database = database
         self._sources = sources
@@ -135,6 +138,7 @@ class FeedService:
         self._weekly_summary_hour = weekly_summary_hour
         self._weekly_summary_timezone = ZoneInfo(weekly_summary_timezone)
         self._weekly_summary_max_stories = weekly_summary_max_stories
+        self._quality_gate_enabled = quality_gate_enabled
         self._next_weekly_check = utc_now()
         self._weekly_summary_first_check = True
         self._feed_locks: dict[int, asyncio.Lock] = {}
@@ -837,6 +841,7 @@ class FeedService:
         allow_update_message: bool = True,
     ) -> str:
         articles = await self._database.story_articles(story.id)
+        model_quality_error: str | None = None
         summarization_enabled = await self._database.story_summarization_enabled(story.id)
         if self._analyzer is not None and summarization_enabled:
             candidates = await self._database.relationship_candidates(
@@ -860,6 +865,8 @@ class FeedService:
                     await self._database.save_story_update_detail(
                         story.id, article.id, result.latest_update
                     )
+                if not result.publication_suitable:
+                    model_quality_error = result.publication_reason
                 log.info(
                     "story analysis updated",
                     extra={
@@ -898,6 +905,44 @@ class FeedService:
         related = await self._database.related_stories(current.id)
         updates = await self._database.story_updates(current.id)
         creating = current.discord_thread_id is None
+        if creating and summarization_enabled and self._analyzer is not None:
+            quality_error = _publication_quality_error(current, articles)
+            if quality_error is not None:
+                await self._database.mark_story_publication(current.id, PublicationState.FAILED)
+                await self._database.mark_article_delivery(
+                    article.id,
+                    DeliveryState.SKIPPED,
+                    error=quality_error,
+                )
+                log.info(
+                    "story withheld by publication quality gate",
+                    extra={
+                        "event": "story_quality_withheld",
+                        "story_id": current.id,
+                        "article_id": article.id,
+                        "reason": quality_error,
+                    },
+                )
+                return "skipped"
+        if creating and self._quality_gate_enabled:
+            quality_error = model_quality_error or _newsworthiness_error(current, articles)
+            if quality_error is not None:
+                await self._database.mark_story_publication(current.id, PublicationState.FAILED)
+                await self._database.mark_article_delivery(
+                    article.id,
+                    DeliveryState.SKIPPED,
+                    error=quality_error,
+                )
+                log.info(
+                    "story withheld by newsworthiness gate",
+                    extra={
+                        "event": "story_newsworthiness_withheld",
+                        "story_id": current.id,
+                        "article_id": article.id,
+                        "reason": quality_error,
+                    },
+                )
+                return "skipped"
         try:
             if creating:
                 receipt = await self._publisher.create_story(
@@ -1083,3 +1128,29 @@ class FeedService:
                 significant=True,
                 allow_update_message=False,
             )
+
+
+def _publication_quality_error(story: Story, articles: list[Article]) -> str | None:
+    if story.analysis_state is AnalysisState.READY and story.analysis:
+        summary = analysis_sections(story.analysis, title=story.title).summary.strip()
+        if len(summary) >= 40 and not repeats_reference(summary, story.title):
+            return None
+    for article in articles:
+        detail = article.description.strip()
+        if len(detail) >= 60 and not repeats_reference(detail, article.title):
+            return None
+    if story.analysis_state is AnalysisState.FAILED:
+        return "analysis failed and no verified detail was available beyond the headline"
+    return "no verified detail was available beyond the headline"
+
+
+def _newsworthiness_error(story: Story, articles: list[Article]) -> str | None:
+    publishers = {article.publisher.strip().casefold() for article in articles if article.publisher}
+    candidate = WeeklyCandidate(
+        story=story,
+        source_count=len(publishers),
+        article_count=len(articles),
+    )
+    if is_publication_worthy(candidate):
+        return None
+    return "story did not meet the configured newsworthiness threshold"

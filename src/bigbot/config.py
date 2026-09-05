@@ -98,6 +98,7 @@ class Settings:
     health_port: int
     public_site_url: str
     public_cors_origins: tuple[str, ...]
+    quality_gate_enabled: bool = True
 
     def validate(self, *, require_discord: bool = False) -> None:
         if require_discord and not self.dry_run and not self.discord_token:
@@ -453,6 +454,7 @@ def load_settings(*, require_discord: bool = False) -> Settings:
             "BIG_PUBLIC_CORS_ORIGINS",
             ("https://bigif.org,https://www.bigif.org,http://127.0.0.1:4173,http://localhost:4173"),
         ),
+        quality_gate_enabled=_boolean("BIG_QUALITY_GATE_ENABLED", "true"),
     )
     settings.validate(require_discord=require_discord)
     return settings

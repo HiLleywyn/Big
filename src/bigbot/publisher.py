@@ -490,15 +490,13 @@ def _story_embed(
             else (story.first_published_at or story.last_updated_at)
         ),
     )
+    timeline_events: list[str] = []
     if primary:
-        embed.add_field(
-            name="Primary source",
-            value=(
-                f"[{publisher_label(primary.publisher, primary.url)}]"
-                f"({safe_external_link(primary.url)})"
-            ),
-            inline=False,
-        )
+        primary_link = safe_external_link(primary.url)
+        primary_source = publisher_label(primary.publisher, primary.url)
+        primary_label = f"[{primary_source}]({primary_link})" if primary_link else primary_source
+        primary_time = int((primary.published_at or primary.discovered_at).timestamp())
+        timeline_events.append(f"**Original report**\n{primary_label}  |  <t:{primary_time}:F>")
     primary_url = primary.canonical_url if primary is not None else ""
     sources: list[str] = []
     seen_urls = {primary_url} if primary_url else set()
@@ -534,11 +532,11 @@ def _story_embed(
             embed.add_field(name="Additional sources", value=value[:1024], inline=False)
     visible_updates = visible_story_updates(primary, updates)
     if visible_updates:
-        update_lines = []
-        shown_updates = visible_updates[-4:]
+        update_lines: list[str] = []
+        shown_updates = visible_updates[-2:]
         if len(visible_updates) > len(shown_updates):
             earlier_count = len(visible_updates) - len(shown_updates)
-            update_lines.append(f"{earlier_count} earlier updates on the story page")
+            update_lines.append(f"{earlier_count} earlier updates are on the story page")
         for update in shown_updates:
             article = update.article
             link = safe_external_link(article.url)
@@ -547,18 +545,15 @@ def _story_embed(
             )
             if not detail:
                 detail = "The source did not provide separate update details."
-            source = (
-                f"[{publisher_label(article.publisher, article.url)}: "
-                f"{plain_text(article.title, limit=100)}]({link})"
-                if link
-                else (
-                    f"{publisher_label(article.publisher, article.url)}: "
-                    f"{plain_text(article.title, limit=100)}"
-                )
-            )
+            source_label = publisher_label(article.publisher, article.url)
+            source = f"[{source_label}]({link})" if link else source_label
             timestamp = int((article.published_at or update.recorded_at).timestamp())
-            update_lines.append(f"**{detail}**\n{source}  <t:{timestamp}:R>")
-        embed.add_field(name="Updates", value="\n".join(update_lines)[:1024], inline=False)
+            update_lines.append(f"**Update**\n{detail}\n{source}  |  <t:{timestamp}:F>")
+        timeline_events.extend(update_lines)
+    if timeline_events:
+        while len("\n\n".join(timeline_events)) > 1024 and len(timeline_events) > 1:
+            timeline_events.pop(1)
+        embed.add_field(name="Timeline", value="\n\n".join(timeline_events), inline=False)
     related = []
     for candidate in related_stories:
         if candidate.discord_thread_id is None:

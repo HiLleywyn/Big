@@ -22,6 +22,7 @@ def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
     assert settings.ai_zdr
     assert settings.openrouter_model == "deepseek/deepseek-v4-flash-0731"
     assert settings.related_story_limit == 8
+    assert settings.quality_gate_enabled
     assert settings.app_config.weekly_summary.enabled
     assert settings.app_config.weekly_summary.weekday == 5
     assert settings.app_config.weekly_summary.timezone == "America/Chicago"

@@ -34,6 +34,8 @@ class StoryAnalysis:
     text: str
     related_story_ids: tuple[int, ...]
     latest_update: str | None = None
+    publication_suitable: bool = True
+    publication_reason: str = ""
 
 
 class FactCheckVerdict(StrEnum):
@@ -183,6 +185,16 @@ class OpenRouterEnricher:
                         " Treat a headline as supporting material. When earlier records describe "
                         "an expectation and the focus record states the resulting outcome, the "
                         "outcome is new information and latest_update must state it directly."
+                        " Set publication_suitable to true only when the event has a concrete "
+                        "public consequence beyond the featured person or company. Strong "
+                        "candidates include conflict, disasters, public health, major policy, "
+                        "security incidents, consequential macroeconomic action, and significant "
+                        "scientific findings. Set it to false for commentary, opinion, podcasts, "
+                        "newsletters, routine funding or valuation announcements, ordinary "
+                        "earnings or stock moves, product promotion, appointments, celebrity or "
+                        "minor sports items, social-media disputes, and routine statistical "
+                        "milestones without a broader consequence. When uncertain, withhold it. "
+                        "publication_reason must state the concrete reason in one short sentence."
                     ),
                 },
                 {
@@ -231,6 +243,11 @@ class OpenRouterEnricher:
                                     "or the comparison process."
                                 ),
                             },
+                            "publication_suitable": {"type": "boolean"},
+                            "publication_reason": {
+                                "type": "string",
+                                "maxLength": 240,
+                            },
                         },
                         "required": [
                             "summary",
@@ -239,6 +256,8 @@ class OpenRouterEnricher:
                             "unclear_or_disputed",
                             "related_story_ids",
                             "latest_update",
+                            "publication_suitable",
+                            "publication_reason",
                         ],
                         "additionalProperties": False,
                     },
@@ -264,7 +283,7 @@ class OpenRouterEnricher:
         ) as exc:
             fallback = _fallback_research_summary(web_evidence, title=story.title)
             fallback = fallback or _fallback_article_summary(articles, title=story.title)
-            if not fallback and self._web_search and web_evidence is None:
+            if not fallback and self._web_search:
                 web_evidence, annotation_links = await self._research_story(story, articles)
                 fallback = _fallback_research_summary(web_evidence, title=story.title)
             if fallback:
@@ -282,7 +301,7 @@ class OpenRouterEnricher:
         if not _summary_adds_detail(result.text, story.title):
             fallback = _fallback_research_summary(web_evidence, title=story.title)
             fallback = fallback or _fallback_article_summary(articles, title=story.title)
-            if not fallback and self._web_search and web_evidence is None:
+            if not fallback and self._web_search:
                 web_evidence, annotation_links = await self._research_story(story, articles)
                 fallback = _fallback_research_summary(web_evidence, title=story.title)
             if fallback:
@@ -326,6 +345,8 @@ class OpenRouterEnricher:
             text=_append_analysis_sources(result.text, articles, annotation_links),
             related_story_ids=supported_relationship_ids,
             latest_update=result.latest_update,
+            publication_suitable=result.publication_suitable,
+            publication_reason=result.publication_reason,
         )
 
     async def _research_story(
@@ -717,6 +738,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     )
     cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    cleaned = _strip_wire_dateline(cleaned)
+    cleaned = _trim_repeated_headline(cleaned, title)
+    if _has_page_chrome(cleaned):
+        return None
     if cleaned and cleaned[0].islower():
         complete_tail = re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+', cleaned, maxsplit=1)
         if len(complete_tail) != 2:
@@ -733,6 +758,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
             "successfully added",
             "sign up for",
             "cookie policy",
+            "choose how you want to print",
+            "print options",
+            "print with images",
+            "socialsharebtn",
             "reuters related",
             "associated press related",
             "i'll research",
@@ -754,6 +783,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
                 "successfully added",
                 "sign up for",
                 "cookie policy",
+                "choose how you want to print",
+                "print options",
+                "print with images",
+                "socialsharebtn",
                 "i'll research",
                 "let me get more details",
                 "i've gathered sufficient evidence",
@@ -783,6 +816,82 @@ def _fallback_quality(value: str) -> int:
     if "..." in value or "…" in value:
         score -= 400
     return score
+
+
+def _trim_repeated_headline(value: str, title: str) -> str:
+    candidate = _normalized_apostrophes(value)
+    reference = _normalized_apostrophes(title)
+    reference = re.sub(r"^(?:analysis|exclusive|watch):\s*", "", reference, flags=re.IGNORECASE)
+    reference = re.sub(
+        r"\s*[-|]\s*(?:ap|associated press|reuters|reuters\.com)\s*$",
+        "",
+        reference,
+        flags=re.IGNORECASE,
+    ).strip()
+    if len(reference) < 24:
+        return value
+    index = candidate.casefold().find(reference.casefold())
+    if index < 0:
+        return value
+    tail = candidate[index + len(reference) :].lstrip(" :-")
+    tail = re.sub(r"^(?:exclusive|report)\s+", "", tail, flags=re.IGNORECASE)
+    return tail if len(tail) >= 35 else value
+
+
+def _normalized_apostrophes(value: str) -> str:
+    return value.replace("\u2018", "'").replace("\u2019", "'")
+
+
+def _strip_wire_dateline(value: str) -> str:
+    match = re.search(
+        r"\((?:WAM|REUTERS|AP|AFP|UPI|DPA|ANSA)\)\s*[-\u2013\u2014]{1,2}\s*",
+        value[:500],
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return value
+    tail = value[match.end() :].strip()
+    return tail if len(tail) >= 35 else value
+
+
+def _has_page_chrome(value: str) -> bool:
+    lowered = value.casefold()
+    markers = (
+        "add al jazeera on google",
+        "at a glance requested by the",
+        "bloomberg · bloomberg",
+        "categories israel news",
+        "contacts for media",
+        "directorate-general for",
+        "emirates news agency logo",
+        "mailto:",
+        "page contents top quote",
+        "policy department for",
+        "choose how you want to print",
+        "print friendly pdf",
+        "print options",
+        "print with images",
+        "real estate listings",
+        "socialsharebtn",
+        "successfully added",
+        "this ad supports our journalism",
+        "access this note the regulatory aspects",
+    )
+    if any(marker in lowered for marker in markers):
+        return True
+    if len(re.findall(r"\b\d{1,2}:\d{2}\b", value)) >= 3:
+        return True
+    if "(published)" in lowered and bool(re.search(r"\b\d+\s+min read\b", lowered)):
+        return True
+    market_symbols = re.findall(
+        r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered, flags=re.IGNORECASE
+    )
+    if len(market_symbols) >= 3:
+        return True
+    words = re.findall(r"[a-z0-9]+", lowered)
+    return any(
+        words[:size] == words[size : size * 2] for size in range(4, min(13, len(words) // 2 + 1))
+    )
 
 
 def _summary_adds_detail(value: str, title: str) -> bool:
@@ -861,13 +970,18 @@ def _relationship_words(value: str) -> set[str]:
 
 
 def _validate_result(value: object, allowed_relationship_ids: set[int]) -> StoryAnalysis:
-    if not isinstance(value, dict) or set(value) != {
+    legacy_fields = {
         "summary",
         "key_facts",
         "useful_context",
         "unclear_or_disputed",
         "related_story_ids",
         "latest_update",
+    }
+    current_fields = legacy_fields | {"publication_suitable", "publication_reason"}
+    if not isinstance(value, dict) or frozenset(value) not in {
+        frozenset(legacy_fields),
+        frozenset(current_fields),
     }:
         raise EnrichmentError("OpenRouter response has an invalid object shape")
     summary = _clean_sentence(value["summary"], "summary", 800)
@@ -882,18 +996,37 @@ def _validate_result(value: object, allowed_relationship_ids: set[int]) -> Story
     related_ids = tuple(dict.fromkeys(raw_ids))
     unknown = set(related_ids) - allowed_relationship_ids
     if unknown:
-        raise EnrichmentError("OpenRouter returned a related story ID outside the candidate list")
+        log.warning(
+            "OpenRouter returned unknown related story IDs",
+            extra={
+                "event": "story_relationship_unknown_rejected",
+                "rejected_count": len(unknown),
+            },
+        )
+        related_ids = tuple(
+            story_id for story_id in related_ids if story_id in allowed_relationship_ids
+        )
     raw_latest_update = value["latest_update"]
     latest_update = (
         None
         if raw_latest_update is None
         else _clean_sentence(raw_latest_update, "latest_update", 600)
     )
+    publication_suitable = value.get("publication_suitable", True)
+    if not isinstance(publication_suitable, bool):
+        raise EnrichmentError("OpenRouter response has invalid publication suitability")
+    publication_reason = _clean_sentence(
+        value.get("publication_reason", "Story meets the configured public-interest standard."),
+        "publication_reason",
+        240,
+    )
     text = _render_analysis(summary, key_facts, useful_context, unclear)
     return StoryAnalysis(
         text=text,
         related_story_ids=related_ids,
         latest_update=latest_update,
+        publication_suitable=publication_suitable,
+        publication_reason=publication_reason,
     )
 
 
@@ -971,10 +1104,13 @@ def _clean_sentence(value: object, name: str, limit: int) -> str:
     if not isinstance(value, str):
         raise EnrichmentError(f"OpenRouter response has invalid {name}")
     cleaned = re.sub(r"\s+", " ", value.replace("\u2014", "-").replace("\u2013", "-")).strip()
+    cleaned = _strip_wire_dateline(cleaned)
     cleaned = neutralize_mentions(_strip_emoji(cleaned))
     if not cleaned or len(cleaned) > limit:
         raise EnrichmentError(f"OpenRouter response has invalid {name}")
     lowered = cleaned.casefold()
+    if _has_page_chrome(cleaned):
+        raise EnrichmentError(f"OpenRouter response contains page chrome in {name}")
     if "as an ai" in lowered or "language model" in lowered:
         raise EnrichmentError("OpenRouter response contains canned model language")
     process_phrases = (

@@ -19,6 +19,7 @@ from bigbot.enrichment import (
     FactCheckVerdict,
     OpenRouterEnricher,
     _clean_fallback_candidate,
+    _validate_result,
 )
 
 
@@ -114,6 +115,122 @@ def test_fallback_summary_rejects_research_process_text() -> None:
             title="Officials change course - Reuters",
         )
         is None
+    )
+
+
+def test_fallback_summary_rejects_share_and_video_navigation_chrome() -> None:
+    value = (
+        "(mailto:?subject=Iran latest&body=https%3A%2F%2Fexample.com&amp) Print Other Close "
+        "Print Options Choose how you want to print Print with images Trump says US may hit "
+        "Iran's Pickaxe Mountain soon 00:38 Another story 01:05 More video 03:11 News desk."
+    )
+
+    assert (
+        _clean_fallback_candidate(
+            value,
+            title="Trump says US may hit Iran's Pickaxe Mountain soon - Reuters",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "Page contents Top Quote(s) Related topics Print friendly pdf Contacts for media "
+            "Today, the Commission adopted a proposal."
+        ),
+        (
+            "SENSEX 76,645.76 492.90 NIFTY 23,910.90 37.45 CRUDEOIL 8,672.00 29.00 "
+            "GOLD 154,939.00 THIS AD SUPPORTS OUR JOURNALISM. Home News World Nepal flood "
+            "losses were estimated at $2.56 billion."
+        ),
+        (
+            "AT A GLANCE Requested by the HOUS Special Committee Policy Department for "
+            "Transport, Employment and Social Affairs Author: Claire Colomb Directorate-General "
+            "for Cohesion, Agriculture and Social Policies PE 776.016. Access this note The "
+            "regulatory aspects of short-term rentals in the EU."
+        ),
+    ],
+)
+def test_structured_analysis_rejects_page_navigation(summary: str) -> None:
+    value = {
+        "summary": summary,
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    with pytest.raises(EnrichmentError, match="page chrome"):
+        _validate_result(value, set())
+
+
+def test_fallback_summary_removes_byline_and_repeated_headline() -> None:
+    value = (
+        "By Reuters September 4, 2026, 4:09:44 PM IST (Published) 3 Min Read Impact Shorts "
+        "CNBCTV18 on Google Trump's bid to shield chip supply chain could backfire in "
+        "Tennessee: Report A Tennessee factory may close after new trade measures drove away "
+        "its two remaining customers. The facility employs about 600 workers."
+    )
+
+    result = _clean_fallback_candidate(
+        value,
+        title=(
+            "EXCLUSIVE: Trump's bid to shield chip supply chain could backfire in Tennessee "
+            "- Reuters"
+        ),
+    )
+
+    assert result == (
+        "A Tennessee factory may close after new trade measures drove away its two remaining "
+        "customers. The facility employs about 600 workers."
+    )
+
+
+def test_structured_analysis_strips_wire_service_page_header_and_dateline() -> None:
+    value = {
+        "summary": (
+            "Emirates News Agency Logo Emirates News Agency Nepal floods death toll reaches "
+            "1,287 as losses hit $2.56 bn Emirates News Agency 2026-09-05T04:25:06+04:00 "
+            "Nepal floods death toll reaches 1,287 as losses hit $2.56 bn KATHMANDU, 5th "
+            "September, 2026 (WAM) -- Nepalese police said 1,287 people were killed and "
+            "5,083 remained missing after floods and landslides."
+        ),
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    result = _validate_result(value, set())
+
+    assert result.text == (
+        "**Summary**\nNepalese police said 1,287 people were killed and 5,083 remained "
+        "missing after floods and landslides."
+    )
+
+
+def test_structured_analysis_preserves_publication_decision() -> None:
+    value = {
+        "summary": "A startup announced a routine private funding round.",
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+        "publication_suitable": False,
+        "publication_reason": "A routine private funding announcement has limited public impact.",
+    }
+
+    result = _validate_result(value, set())
+
+    assert not result.publication_suitable
+    assert result.publication_reason == (
+        "A routine private funding announcement has limited public impact."
     )
 
 
@@ -963,7 +1080,7 @@ async def test_model_override_is_validated_and_applied_per_guild() -> None:
     await client.aclose()
 
 
-async def test_story_analysis_rejects_unknown_related_story_id() -> None:
+async def test_story_analysis_discards_unknown_related_story_id() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(
             200,
@@ -973,7 +1090,7 @@ async def test_story_analysis_rejects_unknown_related_story_id() -> None:
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "summary": "A policy changed.",
+                                    "summary": "Officials approved the policy after a final vote.",
                                     "key_facts": ["One report describes the change."],
                                     "useful_context": [],
                                     "unclear_or_disputed": [],
@@ -997,6 +1114,8 @@ async def test_story_analysis_rejects_unknown_related_story_id() -> None:
         timeout_seconds=15,
         client=client,
     )
-    with pytest.raises(EnrichmentError, match="outside the candidate list"):
-        await enricher.analyze_story(story(1), [article(1, "Wire")], [story(9)])
+    result = await enricher.analyze_story(story(1), [article(1, "Wire")], [story(9)])
+
+    assert result.related_story_ids == ()
+    assert "Officials approved the policy" in result.text
     await client.aclose()

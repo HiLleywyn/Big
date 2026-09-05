@@ -75,6 +75,8 @@ _GOVERNMENT_TERMS = (
     "parliament",
     "president",
     "prime minister",
+    "regulation",
+    "regulator",
     "referendum",
     "supreme court",
     "white house",
@@ -104,11 +106,35 @@ _TECH_SECURITY_TERMS = (
     "semiconductor",
 )
 
+_PUBLIC_HEALTH_TERMS = (
+    "disease",
+    "food safety",
+    "health emergency",
+    "outbreak",
+    "pandemic",
+    "public health",
+)
+
 _LOW_IMPACT_TERMS = (
+    "commentary:",
+    "appoints",
+    "appointment",
     "celebrity",
     "fashion",
+    "funding round",
+    "full-year record",
+    "morning bid",
+    "name dispute",
+    "newsletter",
+    "opinion:",
+    "podcast:",
     "recipe",
     "rumor",
+    "trademark",
+    "using 'twitter' name",
+    'using "twitter" name',
+    "valued at",
+    "valuation",
     "viral video",
 )
 
@@ -181,6 +207,7 @@ def rank_weekly_story(candidate: WeeklyCandidate) -> RankedWeeklyStory:
     score += _signal_score(text, _GOVERNMENT_TERMS, 24)
     score += _signal_score(text, _MACRO_TERMS, 20)
     score += _signal_score(text, _TECH_SECURITY_TERMS, 20)
+    score += _signal_score(text, _PUBLIC_HEALTH_TERMS, 30)
 
     if any(term in text for term in _FORECAST_TERMS):
         score -= 44
@@ -192,6 +219,21 @@ def rank_weekly_story(candidate: WeeklyCandidate) -> RankedWeeklyStory:
         score -= 24
 
     return RankedWeeklyStory(candidate=candidate, score=score)
+
+
+def is_publication_worthy(candidate: WeeklyCandidate) -> bool:
+    """Use the same consequence-first standard for the live feed and weekly digest."""
+    ranked = rank_weekly_story(candidate)
+    story = candidate.story
+    text = f"{story.title} {story.summary}".casefold()
+    tags = {tag.casefold() for tag in story.tags}
+    if any(term in text for term in _LOW_IMPACT_TERMS):
+        return False
+    if "sports" in tags or any(term in text for term in _ROUTINE_SPORTS_TERMS):
+        return False
+    if any(term in text for term in _FORECAST_TERMS) and candidate.source_count < 3:
+        return False
+    return ranked.score >= 20
 
 
 def _signal_score(text: str, terms: tuple[str, ...], weight: int) -> int:

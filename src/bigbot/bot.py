@@ -131,6 +131,7 @@ class BigBot(commands.Bot):
             weekly_summary_hour=config.weekly_summary.hour,
             weekly_summary_timezone=config.weekly_summary.timezone,
             weekly_summary_max_stories=config.weekly_summary.max_stories,
+            quality_gate_enabled=self.settings.quality_gate_enabled,
         )
         self.article_extractor = ArticleExtractor(
             timeout_seconds=self.settings.http_timeout_seconds,
