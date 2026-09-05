@@ -130,7 +130,12 @@ def _is_redundant(value: str, references: Sequence[str]) -> bool:
             return True
         compared_words = _content_words(compared)
         shorter = min(len(candidate_words), len(compared_words))
-        if shorter >= 4 and len(candidate_words & compared_words) / shorter >= 0.8:
+        longer = max(len(candidate_words), len(compared_words))
+        if (
+            shorter >= 4
+            and len(candidate_words & compared_words) / shorter >= 0.8
+            and longer / shorter <= 1.45
+        ):
             return True
     return False
 
@@ -186,7 +191,9 @@ def _deduplicate_body(value: str, *, title: str) -> str:
         kept: list[str] = []
         for line in lines:
             content = re.sub(r"^[-*•]\s+", "", line).strip()
-            if _is_redundant(content, references) or _adds_no_new_detail(content, references):
+            is_repeated = _is_redundant(content, references)
+            lacks_detail = heading != "Summary" and _adds_no_new_detail(content, references)
+            if is_repeated or lacks_detail:
                 references.append(content)
                 continue
             kept.append(f"- {content}" if line.startswith(("- ", "* ", "• ")) else content)

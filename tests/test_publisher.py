@@ -108,6 +108,26 @@ def test_story_embed_removes_cross_section_rephrasing() -> None:
     assert "meeting with a small group of ranchers" in embed["description"]
 
 
+def test_story_embed_keeps_summary_that_adds_context_to_headline() -> None:
+    story = replace(
+        _story(1, "Greer says agriculture announcements likely during Xi visit", 101),
+        analysis=(
+            "**Summary**\n"
+            "Greer said agriculture announcements are likely during Xi's visit. "
+            "He made the remarks in a Fox News interview and said the countries are "
+            "managing their relationship rather than seeking a comprehensive agreement.\n\n"
+            "**Key facts**\n"
+            "- Greer said agriculture announcements are likely during Xi's visit."
+        ),
+    )
+
+    embed = _story_embed(story, [], [], []).to_dict()
+
+    assert "**Summary**" in embed["description"]
+    assert "Fox News interview" in embed["description"]
+    assert "**Key facts**" not in embed["description"]
+
+
 def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
     story = _story(1, "Clean title", 101)
     published = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)
