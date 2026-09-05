@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from bigbot.domain import FeedItem
 from bigbot.normalization import (
     contains_source_artifacts,
@@ -88,3 +90,34 @@ def test_normalization_discards_contaminated_feed_description() -> None:
     normalized = normalize_item(item, fallback_publisher="Wire")
 
     assert normalized.summary == item.title
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "On the day, the Nifty 50 opens new tab fell 0.43%. Skip to main content "
+            "Exclusive news, data and analytics for financial market professionals Learn more "
+            "about Refinitiv."
+        ),
+        (
+            "Judge declares mistrial in Lindsay Clancy case Judge declares mistrial in Lindsay "
+            "Clancy case Judge declares mistrial in Lindsay Clancy case. The jury was deadlocked."
+        ),
+        (
+            "The jury was deadlocked. Posted September 4, 2026 Show more Top Videos Houston "
+            "Texans Foundation celebrating 25 years during Season Premiere video."
+        ),
+    ],
+)
+def test_source_artifacts_detect_search_and_navigation_modules(summary: str) -> None:
+    assert contains_source_artifacts(summary)
+
+
+def test_source_artifacts_allow_repeated_single_market_name() -> None:
+    summary = (
+        "Gold rose 1% after the dollar weakened. Spot gold reached $4,376 an ounce. "
+        "Gold futures for December delivery also settled higher."
+    )
+
+    assert not contains_source_artifacts(summary)

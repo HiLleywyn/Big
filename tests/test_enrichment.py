@@ -265,6 +265,56 @@ def test_structured_analysis_rejects_page_modules_and_repeated_results(
         _validate_result(value, set())
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        (
+            "On the day, the Nifty 50 opens new tab fell 0.43%. Skip to main content "
+            "Exclusive news, data and analytics for financial market professionals Learn more "
+            "about Refinitiv."
+        ),
+        (
+            "Judge declares mistrial in Lindsay Clancy case Judge declares mistrial in Lindsay "
+            "Clancy case Judge declares mistrial in Lindsay Clancy case. The jury was deadlocked."
+        ),
+        (
+            "The jury was deadlocked. Posted September 4, 2026 Show more Top Videos Houston "
+            "Texans Foundation celebrating 25 years during Season Premiere video."
+        ),
+    ],
+)
+def test_structured_analysis_rejects_search_result_and_video_modules(summary: str) -> None:
+    value = {
+        "summary": summary,
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    with pytest.raises(EnrichmentError, match="page chrome"):
+        _validate_result(value, set())
+
+
+def test_structured_analysis_allows_repeated_single_market_name() -> None:
+    value = {
+        "summary": (
+            "Gold rose 1% after the dollar weakened. Spot gold reached $4,376 an ounce. "
+            "Gold futures for December delivery also settled higher."
+        ),
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    result = _validate_result(value, set())
+
+    assert "Gold rose 1%" in result.text
+
+
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)

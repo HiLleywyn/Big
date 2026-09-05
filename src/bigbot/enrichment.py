@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -866,8 +867,11 @@ def _has_page_chrome(value: str) -> bool:
         "categories israel news",
         "contacts for media",
         "directorate-general for",
+        "exclusive news, data and analytics",
         "emirates news agency logo",
         "mailto:",
+        "learn more about refinitiv",
+        "opens new tab",
         "page contents top quote",
         "policy department for",
         "choose how you want to print",
@@ -876,8 +880,13 @@ def _has_page_chrome(value: str) -> bool:
         "print with images",
         "real estate listings",
         "socialsharebtn",
+        "show more top videos",
+        "skip to main content",
+        "subscribe and get today's",
         "successfully added",
         "this ad supports our journalism",
+        "top videos",
+        "your name recipient email",
         "access this note the regulatory aspects",
     )
     if any(marker in lowered for marker in markers):
@@ -886,15 +895,21 @@ def _has_page_chrome(value: str) -> bool:
         return True
     if "(published)" in lowered and bool(re.search(r"\b\d+\s+min read\b", lowered)):
         return True
-    market_symbols = re.findall(
-        r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered, flags=re.IGNORECASE
+    market_symbols = set(
+        re.findall(r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered, flags=re.IGNORECASE)
     )
     if len(market_symbols) >= 3:
         return True
     words = re.findall(r"[a-z0-9]+", lowered)
-    return any(
+    if any(
         words[:size] == words[size : size * 2] for size in range(4, min(13, len(words) // 2 + 1))
-    )
+    ):
+        return True
+    if len(words) >= 18:
+        shingles = Counter(tuple(words[index : index + 5]) for index in range(len(words) - 4))
+        if any(count >= 3 for count in shingles.values()):
+            return True
+    return False
 
 
 def _summary_adds_detail(value: str, title: str) -> bool:

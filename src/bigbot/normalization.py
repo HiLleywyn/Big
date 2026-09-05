@@ -102,12 +102,15 @@ _SOURCE_PAGE_MARKERS = (
     "emirates news agency logo",
     "facebook email the associated press",
     "google preferred source",
+    "exclusive news, data and analytics",
+    "learn more about refinitiv",
     "join our whatsapp channel",
     "latest from knkx",
     "latest news /",
     "mailto:",
     "metadata download",
     "notifications explosions heard",
+    "opens new tab",
     "page contents top quote",
     "policy department for",
     "preservation metadata (premis)",
@@ -117,8 +120,13 @@ _SOURCE_PAGE_MARKERS = (
     "read more comments",
     "real estate listings",
     "socialsharebtn",
+    "show more top videos",
+    "skip to main content",
+    "subscribe and get today's",
+    "top videos",
     "successfully added",
     "this ad supports our journalism",
+    "your name recipient email",
     "you are here home",
 )
 
@@ -197,7 +205,7 @@ def contains_source_artifacts(value: str) -> bool:
         return True
     if "section:" in lowered and len(re.findall(r"\b\d+\s+days?\s+ago\b", lowered)) >= 2:
         return True
-    market_symbols = re.findall(r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered)
+    market_symbols = set(re.findall(r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered))
     if len(market_symbols) >= 3:
         return True
     words = re.findall(r"[a-z0-9]+", lowered)
@@ -205,8 +213,8 @@ def contains_source_artifacts(value: str) -> bool:
         words[:size] == words[size : size * 2] for size in range(4, min(13, len(words) // 2 + 1))
     ):
         return True
-    if len(words) >= 24:
-        shingles = Counter(tuple(words[index : index + 8]) for index in range(len(words) - 7))
+    if len(words) >= 18:
+        shingles = Counter(tuple(words[index : index + 5]) for index in range(len(words) - 4))
         if any(count >= 3 for count in shingles.values()):
             return True
     return False
