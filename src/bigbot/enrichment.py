@@ -279,6 +279,25 @@ class OpenRouterEnricher:
                 )
             raise EnrichmentError("OpenRouter returned an invalid structured response") from exc
         result = _validate_result(parsed, allowed_relationship_ids)
+        if not _summary_adds_detail(result.text, story.title):
+            fallback = _fallback_research_summary(web_evidence, title=story.title)
+            fallback = fallback or _fallback_article_summary(articles, title=story.title)
+            if not fallback and self._web_search and web_evidence is None:
+                web_evidence, annotation_links = await self._research_story(story, articles)
+                fallback = _fallback_research_summary(web_evidence, title=story.title)
+            if fallback:
+                log.warning(
+                    "OpenRouter story summary repeated the headline; using grounded research",
+                    extra={
+                        "event": "story_analysis_headline_fallback",
+                        "story_id": story.id,
+                    },
+                )
+                return StoryAnalysis(
+                    text=_append_analysis_sources(fallback, articles, annotation_links),
+                    related_story_ids=(),
+                    latest_update=None,
+                )
         supported_relationship_ids = tuple(
             story_id
             for story_id in result.related_story_ids
@@ -689,6 +708,13 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     cleaned = re.sub(r"https?://\S+", " ", value)
     cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
     cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
+    cleaned = re.sub(
+        r"^.*?\(Reuters\)\s*-\s*",
+        "",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     lowered_candidate = cleaned.casefold()
@@ -705,7 +731,7 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
         )
     ):
         return None
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned)]
+    sentences = [part.strip() for part in re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+', cleaned)]
     usable: list[str] = []
     for sentence in sentences:
         lowered = sentence.casefold()
@@ -739,6 +765,16 @@ def _fallback_quality(value: str) -> int:
     if "..." in value or "…" in value:
         score -= 400
     return score
+
+
+def _summary_adds_detail(value: str, title: str) -> bool:
+    """Reject a valid-looking response whose summary only rewrites its headline."""
+    for line in value.splitlines():
+        candidate = line.strip()
+        if not candidate or candidate.startswith("**"):
+            continue
+        return not repeats_reference(candidate.removeprefix("- "), title)
+    return False
 
 
 def _article_input(article: Article) -> dict[str, object]:

@@ -14,7 +14,12 @@ from bigbot.domain import (
     Story,
     StoryState,
 )
-from bigbot.enrichment import EnrichmentError, FactCheckVerdict, OpenRouterEnricher
+from bigbot.enrichment import (
+    EnrichmentError,
+    FactCheckVerdict,
+    OpenRouterEnricher,
+    _clean_fallback_candidate,
+)
 
 
 def story(story_id: int, title: str = "A policy changed") -> Story:
@@ -63,6 +68,22 @@ def article(article_id: int, publisher: str) -> Article:
         fingerprint=f"fingerprint-{article_id}",
         delivery_state=DeliveryState.PENDING,
         delivery_error=None,
+    )
+
+
+def test_fallback_summary_removes_reuters_page_chrome_and_stops_cleanly() -> None:
+    value = (
+        "By Thomson Reuters Sep 3, 2026 | 5:01 AM By Helen Coster NEW YORK, "
+        "Sept 3 (Reuters) - Less than a year ago, officials supported the project. "
+        "Now they are calling for new restrictions. Across the country, another "
+        "unfinished sentence about the U.S."
+    )
+
+    result = _clean_fallback_candidate(value, title="Officials change course - Reuters")
+
+    assert result == (
+        "Less than a year ago, officials supported the project. "
+        "Now they are calling for new restrictions."
     )
 
 
@@ -675,6 +696,100 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
     assert "... More" not in result.text
     assert f"[example.gov]({cited_url})" in result.text
     assert result.related_story_ids == ()
+    await client.aclose()
+
+
+async def test_sparse_story_rejects_structured_headline_rewrite() -> None:
+    calls = 0
+    cited_url = "https://example.gov/court-order"
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        if calls == 1:
+            return httpx2.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "The order temporarily prevents enforcement of the new "
+                                    "ballot-envelope requirements while the case proceeds."
+                                ),
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
+                                            "url": cited_url,
+                                            "title": "Court order",
+                                            "content": (
+                                                "The order temporarily prevents enforcement of "
+                                                "the new ballot-envelope requirements while the "
+                                                "case proceeds."
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": (
+                                        "A US judge again blocked the Postal Service's "
+                                        "mail-in voting restrictions."
+                                    ),
+                                    "key_facts": [
+                                        "The judge's action was a repeat, as the title says."
+                                    ],
+                                    "useful_context": [],
+                                    "unclear_or_disputed": [],
+                                    "related_story_ids": [],
+                                    "latest_update": None,
+                                }
+                            ),
+                            "annotations": [],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=10,
+        client=client,
+    )
+    source = replace(
+        article(1, "Reuters"),
+        title="US judge again blocks Postal Service's mail-in voting restrictions - Reuters",
+        description="US judge again blocks Postal Service's mail-in voting restrictions Reuters",
+    )
+    target = replace(story(1), title=source.title, normalized_title=source.title.casefold())
+
+    result = await enricher.analyze_story(target, [source], [])
+
+    assert calls == 2
+    assert "temporarily prevents enforcement" in result.text
+    assert "action was a repeat" not in result.text
+    assert f"[example.gov]({cited_url})" in result.text
     await client.aclose()
 
 
