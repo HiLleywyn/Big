@@ -16,7 +16,7 @@ class SourceProfile:
 
 _PROFILES = (
     SourceProfile(
-        "Associated Press", "center", 0, ("ap", "ap news", "associated press"), ("apnews.com",)
+        "Associated Press", "left", -2, ("ap", "ap news", "associated press"), ("apnews.com",)
     ),
     SourceProfile("Reuters", "center", 0, ("reuters", "reuters.com"), ("reuters.com",)),
     SourceProfile(
@@ -60,12 +60,12 @@ _PROFILES = (
     SourceProfile("Mother Jones", "left", -2, ("mother jones",), ("motherjones.com",)),
     SourceProfile(
         "The Wall Street Journal",
-        "center-right",
-        1,
+        "center",
+        0,
         ("wall street journal", "the wall street journal", "wsj"),
         ("wsj.com",),
     ),
-    SourceProfile("Fox News", "center-right", 1, ("fox", "fox news"), ("foxnews.com",)),
+    SourceProfile("Fox News", "right", 2, ("fox", "fox news"), ("foxnews.com",)),
     SourceProfile("National Review", "right", 2, ("national review",), ("nationalreview.com",)),
     SourceProfile(
         "Washington Examiner", "right", 2, ("washington examiner",), ("washingtonexaminer.com",)
