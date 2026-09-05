@@ -1224,7 +1224,11 @@ class Database:
         return _weekly_summary_from_row(row) if row is not None else None
 
     async def latest_weekly_summary(
-        self, *, guild_id: int | None = None, forum_channel_id: int | None = None
+        self,
+        *,
+        guild_id: int | None = None,
+        forum_channel_id: int | None = None,
+        require_published_stories: bool = False,
     ) -> WeeklySummary | None:
         conditions: list[str] = ["delivery_state = 'posted'"]
         values: list[object] = []
@@ -1234,6 +1238,20 @@ class Database:
         if forum_channel_id is not None:
             conditions.append("forum_channel_id = ?")
             values.append(forum_channel_id)
+        if require_published_stories:
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM json_each(weekly_summaries.story_ids_json) AS selected
+                    JOIN stories ON stories.id = CAST(selected.value AS INTEGER)
+                    WHERE stories.publication_state = 'published'
+                      AND stories.state != 'merged'
+                      AND stories.cleared_at IS NULL
+                      AND stories.discord_thread_id IS NOT NULL
+                )
+                """
+            )
         cursor = await self._db().execute(
             f"""
             SELECT * FROM weekly_summaries

@@ -145,6 +145,23 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert weekly_story["key_facts"] == ["Polls have closed."]
     assert "discord_url" not in weekly_story
 
+    empty_weekly = await database.save_weekly_summary(
+        guild_id=10,
+        forum_channel_id=99,
+        week_start=week_start,
+        week_end=published,
+        title="Empty secondary weekly summary",
+        overview="No public stories remain.",
+        story_ids=(9999,),
+    )
+    await database.mark_weekly_summary_published(empty_weekly.id, thread_id=80, message_id=90)
+    still_valid = await build_story_feed(
+        database,
+        query=StoryFeedQuery(limit=10),
+        public_site_url="https://bigif.org",
+    )
+    assert still_valid["weekly_summary"]["id"] == weekly.id
+
     detail = await build_story_detail(
         database, story_id=story.id, public_site_url="https://bigif.org"
     )

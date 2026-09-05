@@ -134,7 +134,7 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
 async def _latest_weekly_summary_item(
     database: Database, public_site_url: str
 ) -> dict[str, object] | None:
-    summary = await database.latest_weekly_summary()
+    summary = await database.latest_weekly_summary(require_published_stories=True)
     if summary is None:
         return None
     stories: list[tuple[Story, int]] = []
