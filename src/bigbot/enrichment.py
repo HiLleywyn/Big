@@ -666,11 +666,15 @@ def _fallback_research_summary(evidence: dict[str, object] | None, *, title: str
     notes = evidence.get("notes")
     if isinstance(notes, str):
         candidates.append(notes)
+    summaries: list[str] = []
     for candidate in candidates:
         summary = _clean_fallback_candidate(candidate, title=title)
         if summary:
-            return _render_analysis(summary, (), (), ())
-    return None
+            summaries.append(summary)
+    if not summaries:
+        return None
+    best = max(summaries, key=_fallback_quality)
+    return _render_analysis(best, (), (), ())
 
 
 def _fallback_article_summary(articles: Sequence[Article], *, title: str) -> str | None:
@@ -724,6 +728,17 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
         return _clean_sentence(" ".join(usable), "fallback summary", 800)
     except EnrichmentError:
         return None
+
+
+def _fallback_quality(value: str) -> int:
+    score = min(len(value), 600)
+    if value.endswith((".", "!", "?")):
+        score += 120
+    else:
+        score -= 180
+    if "..." in value or "…" in value:
+        score -= 400
+    return score
 
 
 def _article_input(article: Article) -> dict[str, object]:

@@ -627,6 +627,16 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
                                     {
                                         "type": "url_citation",
                                         "url_citation": {
+                                            "url": "https://example.com/truncated",
+                                            "title": "Truncated result",
+                                            "content": (
+                                                "Officials discussed the allocation ... More"
+                                            ),
+                                        },
+                                    },
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
                                             "url": cited_url,
                                             "title": "Official statement",
                                             "content": "Officials confirmed the allocation.",
@@ -662,6 +672,7 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
 
     assert calls == 2
     assert "Officials confirmed the allocation" in result.text
+    assert "... More" not in result.text
     assert f"[example.gov]({cited_url})" in result.text
     assert result.related_story_ids == ()
     await client.aclose()
