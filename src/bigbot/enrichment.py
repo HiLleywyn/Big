@@ -772,11 +772,11 @@ def _relationship_supported(left: Story, right: Story) -> bool:
     shared_events = set(left.event_terms) & set(right.event_terms)
     shared_numbers = set(left.numbers) & set(right.numbers)
     shared_keywords = set(left.keywords) & set(right.keywords)
-    if len(shared_words) >= 3 and title_overlap >= 0.4:
+    if len(shared_words) >= 3 and title_overlap >= 0.5:
         return True
-    concrete_anchor = bool(shared_entities or shared_events or shared_numbers)
-    return concrete_anchor and (
-        len(shared_words) >= 2 or len(shared_keywords) >= 2 or title_overlap >= 0.3
+    return bool(shared_entities) and (
+        (bool(shared_events) and (len(shared_words) >= 2 or len(shared_keywords) >= 3))
+        or (bool(shared_numbers) and len(shared_words) >= 2)
     )
 
 
