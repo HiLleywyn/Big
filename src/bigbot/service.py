@@ -262,6 +262,16 @@ class FeedService:
                 until=current + timedelta(microseconds=1),
                 limit=max(60, self._weekly_summary_max_stories * 10),
             )
+            if self._quality_gate_enabled:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if _publication_quality_error(
+                        candidate.story,
+                        await self._database.story_articles(candidate.story.id),
+                    )
+                    is None
+                ]
             selected = select_weekly_stories(
                 candidates,
                 limit=self._weekly_summary_max_stories,
