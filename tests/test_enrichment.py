@@ -656,6 +656,38 @@ async def test_sparse_story_uses_grounded_research_when_structured_json_fails() 
     await client.aclose()
 
 
+async def test_story_uses_source_description_when_structured_json_fails() -> None:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(
+            200,
+            json={"choices": [{"message": {"content": "not valid json"}}]},
+        )
+
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=False,
+        zdr=True,
+        timeout_seconds=10,
+        client=client,
+    )
+    source = replace(
+        article(1, "Reuters"),
+        description="Officials said the measure takes effect Friday after lawmakers approved it.",
+    )
+
+    result = await enricher.analyze_story(story(1), [source], [])
+
+    assert "**Summary**" in result.text
+    assert "takes effect Friday" in result.text
+    await client.aclose()
+
+
 async def test_model_override_is_validated_and_applied_per_guild() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":

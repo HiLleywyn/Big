@@ -263,6 +263,7 @@ class OpenRouterEnricher:
             TypeError,
         ) as exc:
             fallback = _fallback_research_summary(web_evidence, title=story.title)
+            fallback = fallback or _fallback_article_summary(articles, title=story.title)
             if fallback:
                 log.warning(
                     "OpenRouter structured story response was invalid; using grounded research",
@@ -663,38 +664,49 @@ def _fallback_research_summary(evidence: dict[str, object] | None, *, title: str
     if isinstance(notes, str):
         candidates.append(notes)
     for candidate in candidates:
-        cleaned = re.sub(r"https?://\S+", " ", candidate)
-        cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
-        cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
-        cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned)]
-        usable: list[str] = []
-        for sentence in sentences:
-            lowered = sentence.casefold()
-            if any(
-                marker in lowered
-                for marker in (
-                    "getty images",
-                    "shopgma",
-                    "successfully added",
-                    "sign up for",
-                    "cookie policy",
-                )
-            ):
-                break
-            if len(sentence) >= 35 and not repeats_reference(sentence, title):
-                usable.append(sentence)
-            if len(usable) == 2:
-                break
-        cleaned = " ".join(usable)
-        try:
-            summary = _clean_sentence(cleaned, "research summary", 800)
-        except EnrichmentError:
-            continue
-        if not repeats_reference(summary, title):
+        summary = _clean_fallback_candidate(candidate, title=title)
+        if summary:
             return _render_analysis(summary, (), (), ())
     return None
+
+
+def _fallback_article_summary(articles: Sequence[Article], *, title: str) -> str | None:
+    for article in articles:
+        summary = _clean_fallback_candidate(article.description, title=title)
+        if summary:
+            return _render_analysis(summary, (), (), ())
+    return None
+
+
+def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
+    cleaned = re.sub(r"https?://\S+", " ", value)
+    cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
+    cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
+    cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned)]
+    usable: list[str] = []
+    for sentence in sentences:
+        lowered = sentence.casefold()
+        if any(
+            marker in lowered
+            for marker in (
+                "getty images",
+                "shopgma",
+                "successfully added",
+                "sign up for",
+                "cookie policy",
+            )
+        ):
+            break
+        if len(sentence) >= 35 and not repeats_reference(sentence, title):
+            usable.append(sentence)
+        if len(usable) == 2:
+            break
+    try:
+        return _clean_sentence(" ".join(usable), "fallback summary", 800)
+    except EnrichmentError:
+        return None
 
 
 def _article_input(article: Article) -> dict[str, object]:
