@@ -87,6 +87,27 @@ def test_story_embed_does_not_repeat_headline_as_summary_and_fact() -> None:
     assert embed["description"] == "The source supplied no verified details beyond the headline."
 
 
+def test_story_embed_removes_cross_section_rephrasing() -> None:
+    story = replace(
+        _story(1, "Trump signs orders concerning ranchers and meat processing", 101),
+        analysis=(
+            "**Summary**\n"
+            "Trump signed orders concerning ranchers, wolves, and meat processing. "
+            "The directives aim to lower record beef prices.\n\n"
+            "**Key facts**\n"
+            "- Trump signed the ranching and meat-processing orders.\n"
+            "- The orders aim to bring down record beef prices.\n"
+            "- The signing followed a meeting with a small group of ranchers."
+        ),
+    )
+
+    embed = _story_embed(story, [], [], []).to_dict()
+
+    assert "bring down record beef prices" not in embed["description"]
+    assert "signed the ranching and meat-processing orders" not in embed["description"]
+    assert "meeting with a small group of ranchers" in embed["description"]
+
+
 def test_story_embed_puts_article_time_only_in_footer_timestamp() -> None:
     story = _story(1, "Clean title", 101)
     published = datetime(2026, 9, 2, 15, 30, tzinfo=UTC)

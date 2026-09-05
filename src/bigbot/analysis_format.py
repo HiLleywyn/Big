@@ -136,11 +136,29 @@ def _is_redundant(value: str, references: Sequence[str]) -> bool:
 
 
 def _content_words(value: str) -> set[str]:
-    return {
-        word[:-1] if len(word) > 4 and word.endswith("s") else word
-        for word in value.split()
-        if word not in _COMPARISON_STOP_WORDS
-    }
+    return {_word_root(word) for word in value.split() if word not in _COMPARISON_STOP_WORDS}
+
+
+def _word_root(word: str) -> str:
+    if len(word) > 5 and word.endswith("ing"):
+        return word[:-3]
+    if len(word) > 5 and word.endswith("ies"):
+        return f"{word[:-3]}y"
+    if len(word) > 4 and word.endswith("s"):
+        return word[:-1]
+    return word
+
+
+def _adds_no_new_detail(value: str, references: Sequence[str]) -> bool:
+    candidate = _content_words(_comparison_text(value))
+    known = set().union(*(_content_words(_comparison_text(item)) for item in references))
+    shared = candidate & known
+    novel = candidate - known
+    return (
+        len(candidate) >= 4
+        and len(shared) >= 3
+        and (len(novel) <= 2 or len(novel) / len(candidate) <= 0.18)
+    )
 
 
 def _deduplicate_body(value: str, *, title: str) -> str:
@@ -168,7 +186,8 @@ def _deduplicate_body(value: str, *, title: str) -> str:
         kept: list[str] = []
         for line in lines:
             content = re.sub(r"^[-*•]\s+", "", line).strip()
-            if _is_redundant(content, references):
+            if _is_redundant(content, references) or _adds_no_new_detail(content, references):
+                references.append(content)
                 continue
             kept.append(f"- {content}" if line.startswith(("- ", "* ", "• ")) else content)
             references.append(content)

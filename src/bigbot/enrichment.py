@@ -159,6 +159,9 @@ class OpenRouterEnricher:
                         "more than three short sentences. Do not restate the headline as the "
                         "summary. Key facts must add information that is not already stated in "
                         "the headline or summary and must be directly supported by at least one "
+                        "source. If a detail appears in the summary, omit it from Key facts even "
+                        "when it can be rephrased. Each section must have a distinct purpose. "
+                        "Every fact must be directly supported by at least one "
                         "supplied source or cited web result. Always write a short Summary when "
                         "the evidence adds concrete detail beyond the headline. If no additional "
                         "verified detail is "
@@ -651,23 +654,40 @@ def _fallback_research_summary(evidence: dict[str, object] | None, *, title: str
     if not evidence:
         return None
     candidates: list[str] = []
-    notes = evidence.get("notes")
-    if isinstance(notes, str):
-        candidates.append(notes)
     sources = evidence.get("sources")
     if isinstance(sources, list):
         candidates.extend(
             str(source.get("excerpt") or "") for source in sources if isinstance(source, dict)
         )
+    notes = evidence.get("notes")
+    if isinstance(notes, str):
+        candidates.append(notes)
     for candidate in candidates:
         cleaned = re.sub(r"https?://\S+", " ", candidate)
         cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
         cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
         cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-        if len(cleaned) > 800:
-            boundary = cleaned.rfind(". ", 0, 800)
-            cleaned = cleaned[: boundary + 1 if boundary >= 120 else 800].rstrip()
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned)]
+        usable: list[str] = []
+        for sentence in sentences:
+            lowered = sentence.casefold()
+            if any(
+                marker in lowered
+                for marker in (
+                    "getty images",
+                    "shopgma",
+                    "successfully added",
+                    "sign up for",
+                    "cookie policy",
+                )
+            ):
+                break
+            if len(sentence) >= 35 and not repeats_reference(sentence, title):
+                usable.append(sentence)
+            if len(usable) == 2:
+                break
+        cleaned = " ".join(usable)
         try:
             summary = _clean_sentence(cleaned, "research summary", 800)
         except EnrichmentError:
