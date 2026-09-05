@@ -98,11 +98,14 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert result["tags"] == ["Politics", "World"]
     assert result["published_at"] == published.isoformat()
     assert result["sources"][0]["publisher"] == "Wire"
+    assert result["sources"][0]["bias"] == "unrated"
     assert result["original"]["url"] == original.url
     assert result["original"]["description"] == "Votes are being counted."
     assert result["updates"] == [
         {
             "publisher": "Wire",
+            "bias": "unrated",
+            "bias_score": None,
             "title": "Election officials publish an initial count",
             "description": "The first official count has been published.",
             "url": "https://example.com/story-update",
@@ -119,6 +122,18 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert payload["total"] == 1
     assert payload["has_more"] is False
     assert payload["tag_counts"] == {"Politics": 1, "World": 1}
+    assert payload["source_balance"] == {
+        "left": 0,
+        "center": 0,
+        "right": 0,
+        "official": 0,
+        "unrated": 1,
+        "rated_appearances": 0,
+        "total_appearances": 1,
+        "outlets": [{"outlet": "Wire", "bias": "unrated", "appearances": 1}],
+        "basis": "publisher-level editorial leaning; not an article accuracy rating",
+        "catalog_version": "editorial-lean-v1",
+    }
     week_start = datetime(2026, 8, 30, tzinfo=UTC)
     weekly = await database.save_weekly_summary(
         guild_id=10,
@@ -280,4 +295,11 @@ async def test_public_feed_paginates_and_filters_by_search_and_tag(tmp_path) -> 
     result = filtered["stories"]
     assert isinstance(result, list)
     assert result[0]["title"] == "Central bank holds rates"
+    source_filtered = await build_story_feed(
+        database,
+        query=StoryFeedQuery(limit=15, source="Market Desk", bias="unrated"),
+        public_site_url="https://bigif.org",
+    )
+    assert source_filtered["total"] == 1
+    assert source_filtered["stories"][0]["title"] == "Central bank holds rates"
     await database.close()

@@ -24,6 +24,7 @@ from bigbot.domain import (
     utc_now,
 )
 from bigbot.normalization import NormalizedArticle
+from bigbot.source_bias import canonical_source_name, source_bias_bucket
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS feeds (
@@ -269,6 +270,12 @@ class Database:
         await connection.execute("PRAGMA foreign_keys = ON")
         await connection.execute("PRAGMA journal_mode = WAL")
         await connection.execute("PRAGMA busy_timeout = 5000")
+        await connection.create_function(
+            "canonical_source_name", 2, canonical_source_name, deterministic=True
+        )
+        await connection.create_function(
+            "source_bias_bucket", 2, source_bias_bucket, deterministic=True
+        )
         await connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -781,10 +788,14 @@ class Database:
         cursor: tuple[datetime, int] | None = None,
         search: str = "",
         tags: tuple[str, ...] = (),
+        source: str = "",
+        bias: str = "",
     ) -> list[Story]:
         if not 1 <= limit <= 51:
             raise ValueError("story limit must be between 1 and 51")
-        conditions, parameters = _published_story_filters(search=search, tags=tags)
+        conditions, parameters = _published_story_filters(
+            search=search, tags=tags, source=source, bias=bias
+        )
         if cursor is not None:
             cursor_time, cursor_id = cursor
             timestamp = cursor_time.isoformat()
@@ -802,8 +813,17 @@ class Database:
         db_cursor = await self._db().execute(query, parameters)
         return [_story_from_row(row) async for row in db_cursor]
 
-    async def count_published_stories(self, *, search: str = "", tags: tuple[str, ...] = ()) -> int:
-        conditions, parameters = _published_story_filters(search=search, tags=tags)
+    async def count_published_stories(
+        self,
+        *,
+        search: str = "",
+        tags: tuple[str, ...] = (),
+        source: str = "",
+        bias: str = "",
+    ) -> int:
+        conditions, parameters = _published_story_filters(
+            search=search, tags=tags, source=source, bias=bias
+        )
         cursor = await self._db().execute(
             f"SELECT COUNT(*) AS count FROM stories WHERE {' AND '.join(conditions)}",
             parameters,
@@ -812,7 +832,9 @@ class Database:
         return int(row["count"] if row is not None else 0)
 
     async def published_story_tag_counts(self, *, search: str = "") -> dict[str, int]:
-        conditions, parameters = _published_story_filters(search=search, tags=())
+        conditions, parameters = _published_story_filters(
+            search=search, tags=(), source="", bias=""
+        )
         cursor = await self._db().execute(
             f"""
             SELECT stories.tags_json FROM stories
@@ -827,6 +849,37 @@ class Database:
                 if label:
                     counts[label] = counts.get(label, 0) + 1
         return counts
+
+    async def published_source_balance(
+        self, *, search: str = "", tags: tuple[str, ...] = ()
+    ) -> list[dict[str, object]]:
+        conditions, parameters = _published_story_filters(
+            search=search, tags=tags, source="", bias=""
+        )
+        cursor = await self._db().execute(
+            f"""
+            SELECT outlet, bias, COUNT(*) AS appearances
+            FROM (
+                SELECT DISTINCT stories.id AS story_id,
+                    canonical_source_name(articles.publisher, articles.url) AS outlet,
+                    source_bias_bucket(articles.publisher, articles.url) AS bias
+                FROM stories
+                JOIN articles ON articles.story_id = stories.id
+                WHERE {" AND ".join(conditions)}
+            )
+            GROUP BY outlet, bias
+            ORDER BY appearances DESC, outlet
+            """,
+            parameters,
+        )
+        return [
+            {
+                "outlet": str(row["outlet"]),
+                "bias": str(row["bias"]),
+                "appearances": int(row["appearances"]),
+            }
+            async for row in cursor
+        ]
 
     async def published_stories_needing_analysis(self, *, limit: int = 100) -> list[Story]:
         if not 1 <= limit <= 500:
@@ -1881,7 +1934,7 @@ class Database:
 
 
 def _published_story_filters(
-    *, search: str, tags: tuple[str, ...]
+    *, search: str, tags: tuple[str, ...], source: str = "", bias: str = ""
 ) -> tuple[list[str], list[object]]:
     conditions = [
         "stories.publication_state = 'published'",
@@ -1909,6 +1962,34 @@ def _published_story_filters(
             f"WHERE story_tag.value IN ({placeholders}))"
         )
         parameters.extend(cleaned_tags)
+    cleaned_source = source.strip()
+    if cleaned_source:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM articles AS source_articles "
+            "WHERE source_articles.story_id = stories.id "
+            "AND canonical_source_name(source_articles.publisher, source_articles.url) = ?)"
+        )
+        parameters.append(cleaned_source)
+    cleaned_bias = bias.strip().casefold()
+    if cleaned_bias:
+        allowed_biases = {
+            "left": ("left", "center-left"),
+            "center": ("center",),
+            "right": ("center-right", "right"),
+            "official": ("official",),
+            "unrated": ("unrated",),
+        }
+        buckets = allowed_biases.get(cleaned_bias)
+        if buckets is None:
+            raise ValueError("bias must be left, center, right, official, or unrated")
+        placeholders = ", ".join("?" for _ in buckets)
+        conditions.append(
+            "EXISTS (SELECT 1 FROM articles AS bias_articles "
+            "WHERE bias_articles.story_id = stories.id "
+            "AND source_bias_bucket(bias_articles.publisher, bias_articles.url) "
+            f"IN ({placeholders}))"
+        )
+        parameters.extend(buckets)
     return conditions, parameters
 
 

@@ -51,7 +51,17 @@ async def test_public_story_feed_is_bounded_and_cors_is_allowlisted() -> None:
         return {"ready": True}
 
     async def stories(query: StoryFeedQuery) -> dict[str, object]:
-        return {"stories": [{"id": query.limit, "q": query.search, "tags": query.tags}]}
+        return {
+            "stories": [
+                {
+                    "id": query.limit,
+                    "q": query.search,
+                    "tags": query.tags,
+                    "source": query.source,
+                    "bias": query.bias,
+                }
+            ]
+        }
 
     async def detail(story_id: int) -> dict[str, object] | None:
         return {"story": {"id": story_id}} if story_id == 12 else None
@@ -69,15 +79,24 @@ async def test_public_story_feed_is_bounded_and_cors_is_allowlisted() -> None:
     port = int(server._runner.addresses[0][1])
     async with ClientSession() as session:
         async with session.get(
-            f"http://127.0.0.1:{port}/api/v1/stories?limit=12&q=vote&tag=World",
+            f"http://127.0.0.1:{port}/api/v1/stories?limit=12&q=vote&tag=World"
+            "&source=Reuters&bias=center",
             headers={"Origin": "http://127.0.0.1:4173"},
         ) as response:
             assert response.status == 200
             assert (await response.json())["stories"] == [
-                {"id": 12, "q": "vote", "tags": ["World"]}
+                {
+                    "id": 12,
+                    "q": "vote",
+                    "tags": ["World"],
+                    "source": "Reuters",
+                    "bias": "center",
+                }
             ]
             assert response.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:4173"
         async with session.get(f"http://127.0.0.1:{port}/api/v1/stories?limit=101") as response:
+            assert response.status == 400
+        async with session.get(f"http://127.0.0.1:{port}/api/v1/stories?bias=diagonal") as response:
             assert response.status == 400
         async with session.get(f"http://127.0.0.1:{port}/api/v1/stories/12") as response:
             assert response.status == 200

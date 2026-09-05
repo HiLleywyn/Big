@@ -74,11 +74,19 @@ class HealthServer:
         tags = tuple(dict.fromkeys(tag.strip() for tag in request.query.getall("tag", [])))
         if len(tags) > 5 or any(len(tag) > 40 for tag in tags):
             raise web.HTTPBadRequest(text="use at most 5 tags of 40 characters each")
+        source = request.query.get("source", "").strip()
+        if len(source) > 100:
+            raise web.HTTPBadRequest(text="source must be at most 100 characters")
+        bias = request.query.get("bias", "").strip().casefold()
+        if bias and bias not in {"left", "center", "right", "official", "unrated"}:
+            raise web.HTTPBadRequest(text="bias must be left, center, right, official, or unrated")
         query = StoryFeedQuery(
             limit=limit,
             cursor=request.query.get("cursor"),
             search=search,
             tags=tags,
+            source=source,
+            bias=bias,
         )
         try:
             payload = await self._story_feed_provider(query)

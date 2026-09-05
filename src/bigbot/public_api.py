@@ -17,6 +17,7 @@ from bigbot.database import Database
 from bigbot.domain import AnalysisState, Article, Story, WeeklySummary, parse_time, utc_now
 from bigbot.normalization import normalize_url
 from bigbot.security import forum_title, publisher_label, safe_external_link
+from bigbot.source_bias import source_bias_bucket, source_bias_score
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,8 @@ class StoryFeedQuery:
     cursor: str | None = None
     search: str = ""
     tags: tuple[str, ...] = ()
+    source: str = ""
+    bias: str = ""
 
 
 async def build_story_feed(
@@ -41,18 +44,31 @@ async def build_story_feed(
         cursor=decoded_cursor,
         search=request.search,
         tags=request.tags,
+        source=request.source,
+        bias=request.bias,
     )
     has_more = len(stories) > request.limit
     visible = stories[: request.limit]
     items = [await _story_item(database, story, public_site_url) for story in visible]
     next_cursor = _encode_cursor(visible[-1]) if has_more and visible else None
     return {
-        "version": 6,
+        "version": 7,
         "generated_at": utc_now().isoformat(),
-        "total": await database.count_published_stories(search=request.search, tags=request.tags),
+        "total": await database.count_published_stories(
+            search=request.search,
+            tags=request.tags,
+            source=request.source,
+            bias=request.bias,
+        ),
         "has_more": has_more,
         "next_cursor": next_cursor,
         "tag_counts": await database.published_story_tag_counts(search=request.search),
+        "source_balance": _source_balance(
+            await database.published_source_balance(
+                search=request.search,
+                tags=request.tags,
+            )
+        ),
         "weekly_summary": await _latest_weekly_summary_item(database, public_site_url),
         "stories": items,
     }
@@ -65,7 +81,7 @@ async def build_story_detail(
     if story is None:
         return None
     return {
-        "version": 6,
+        "version": 7,
         "generated_at": utc_now().isoformat(),
         "story": await _story_item(database, story, public_site_url),
     }
@@ -245,14 +261,41 @@ def _published_at(story: Story, primary: Article | None) -> str:
 
 
 def _source_item(article: Article) -> dict[str, object]:
+    bias = source_bias_bucket(article.publisher, article.url)
     return {
         "publisher": publisher_label(article.publisher, article.url),
+        "bias": bias,
+        "bias_score": source_bias_score(article.publisher, article.url),
         "title": forum_title(article.title),
         "description": story_update_detail(article.title, article.description, limit=1000),
         "url": safe_external_link(article.url),
         "published_at": (
             article.published_at.isoformat() if article.published_at is not None else None
         ),
+    }
+
+
+def _source_balance(outlets: list[dict[str, object]]) -> dict[str, object]:
+    counts = {key: 0 for key in ("left", "center", "right", "official", "unrated")}
+    for outlet in outlets:
+        appearances = int(str(outlet.get("appearances", 0)))
+        bias = str(outlet.get("bias", "unrated"))
+        if bias in {"left", "center-left"}:
+            counts["left"] += appearances
+        elif bias in {"center-right", "right"}:
+            counts["right"] += appearances
+        elif bias in counts:
+            counts[bias] += appearances
+        else:
+            counts["unrated"] += appearances
+    rated = counts["left"] + counts["center"] + counts["right"]
+    return {
+        **counts,
+        "rated_appearances": rated,
+        "total_appearances": rated + counts["official"] + counts["unrated"],
+        "outlets": outlets,
+        "basis": "publisher-level editorial leaning; not an article accuracy rating",
+        "catalog_version": "editorial-lean-v1",
     }
 
 
