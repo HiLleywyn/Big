@@ -97,6 +97,16 @@ def test_fallback_summary_rejects_mid_sentence_excerpt() -> None:
     )
 
 
+def test_fallback_summary_discards_mid_sentence_prefix() -> None:
+    result = _clean_fallback_candidate(
+        "liability for officials who previously supported the project. "
+        "The governor then called for new restrictions.",
+        title="Officials change course - Reuters",
+    )
+
+    assert result == "The governor then called for new restrictions."
+
+
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)

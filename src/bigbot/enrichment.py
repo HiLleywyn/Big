@@ -718,7 +718,12 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     if cleaned and cleaned[0].islower():
-        return None
+        complete_tail = re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+', cleaned, maxsplit=1)
+        if len(complete_tail) != 2:
+            return None
+        cleaned = complete_tail[1].strip()
+        if not cleaned or cleaned[0].islower():
+            return None
     lowered_candidate = cleaned.casefold()
     if any(
         marker in lowered_candidate
@@ -753,7 +758,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
         if len(usable) == 2:
             break
     try:
-        return _clean_sentence(" ".join(usable), "fallback summary", 800)
+        summary = " ".join(usable)
+        if summary and not summary.endswith((".", "!", "?")):
+            summary += "."
+        return _clean_sentence(summary, "fallback summary", 800)
     except EnrichmentError:
         return None
 
