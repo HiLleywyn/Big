@@ -688,6 +688,65 @@ async def test_story_uses_source_description_when_structured_json_fails() -> Non
     await client.aclose()
 
 
+async def test_story_researches_after_invalid_json_and_unusable_description() -> None:
+    calls = 0
+    cited_url = "https://example.gov/statement"
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx2.Response(
+                200,
+                json={"choices": [{"message": {"content": "not valid json"}}]},
+            )
+        body = json.loads(request.content)
+        assert body["tools"][0]["type"] == "openrouter:web_search"
+        return httpx2.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Officials confirmed two additional measures on Friday.",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url_citation": {
+                                        "url": cited_url,
+                                        "title": "Official statement",
+                                        "content": "Officials confirmed two additional measures.",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    enricher = OpenRouterEnricher(
+        api_key="secret",
+        model="provider/model",
+        web_search=True,
+        zdr=True,
+        timeout_seconds=10,
+        client=client,
+    )
+    source = replace(article(1, "Reuters"), description="More details soon.")
+
+    result = await enricher.analyze_story(story(1), [source], [])
+
+    assert calls == 2
+    assert "two additional measures" in result.text
+    assert f"[example.gov]({cited_url})" in result.text
+    await client.aclose()
+
+
 async def test_model_override_is_validated_and_applied_per_guild() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":

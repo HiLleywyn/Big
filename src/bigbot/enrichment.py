@@ -264,6 +264,9 @@ class OpenRouterEnricher:
         ) as exc:
             fallback = _fallback_research_summary(web_evidence, title=story.title)
             fallback = fallback or _fallback_article_summary(articles, title=story.title)
+            if not fallback and self._web_search and web_evidence is None:
+                web_evidence, annotation_links = await self._research_story(story, articles)
+                fallback = _fallback_research_summary(web_evidence, title=story.title)
             if fallback:
                 log.warning(
                     "OpenRouter structured story response was invalid; using grounded research",
