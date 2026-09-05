@@ -717,6 +717,8 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     )
     cleaned = re.sub(r"(?:^|\s)[-•]\s+", ". ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if cleaned and cleaned[0].islower():
+        return None
     lowered_candidate = cleaned.casefold()
     if any(
         marker in lowered_candidate

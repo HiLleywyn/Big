@@ -87,6 +87,16 @@ def test_fallback_summary_removes_reuters_page_chrome_and_stops_cleanly() -> Non
     )
 
 
+def test_fallback_summary_rejects_mid_sentence_excerpt() -> None:
+    assert (
+        _clean_fallback_candidate(
+            "liability for officials who previously supported the project.",
+            title="Officials change course - Reuters",
+        )
+        is None
+    )
+
+
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
