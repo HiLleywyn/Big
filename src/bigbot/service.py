@@ -141,7 +141,6 @@ class FeedService:
         self._weekly_summary_max_stories = weekly_summary_max_stories
         self._quality_gate_enabled = quality_gate_enabled
         self._next_weekly_check = utc_now()
-        self._weekly_summary_first_check = True
         self._feed_locks: dict[int, asyncio.Lock] = {}
         self._story_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
@@ -151,25 +150,31 @@ class FeedService:
         while not self._stopping.is_set():
             try:
                 await self._database.mark_stale_stories(utc_now() - self._stale_after)
-                await self.cleanup_old_stories()
+                top_stories_changed = bool(await self.cleanup_old_stories())
                 if (
                     self._automatic_cluster_management
                     and utc_now() >= self._next_cluster_maintenance
                 ):
-                    await self.maintain_story_clusters()
+                    maintenance = await self.maintain_story_clusters()
+                    top_stories_changed = top_stories_changed or bool(
+                        maintenance.merged or maintenance.split
+                    )
                     self._next_cluster_maintenance = utc_now() + self._cluster_maintenance_interval
-                if self._weekly_summary_enabled and utc_now() >= self._next_weekly_check:
-                    await self.publish_due_weekly_summaries(force=self._weekly_summary_first_check)
-                    self._weekly_summary_first_check = False
-                    self._next_weekly_check = utc_now() + timedelta(minutes=5)
                 for feed in await self._database.due_feeds(utc_now()):
                     try:
-                        await self.poll_feed(feed.id)
+                        report = await self.poll_feed(feed.id)
+                        top_stories_changed = top_stories_changed or bool(
+                            report.new_stories or report.updated_stories
+                        )
                     except Exception:
                         log.exception(
                             "feed poll crashed",
                             extra={"event": "poll_crash", "feed_id": feed.id},
                         )
+                weekly_check_due = utc_now() >= self._next_weekly_check
+                if self._weekly_summary_enabled and (weekly_check_due or top_stories_changed):
+                    await self.publish_due_weekly_summaries(force=True)
+                    self._next_weekly_check = utc_now() + timedelta(minutes=5)
             except Exception:
                 log.exception("scheduler tick failed", extra={"event": "scheduler_crash"})
             with contextlib.suppress(TimeoutError):
@@ -264,12 +269,7 @@ class FeedService:
             stories = [candidate.story for candidate in selected]
             if not stories:
                 continue
-            local_start = week_start.astimezone(self._weekly_summary_timezone)
-            local_end = current.astimezone(self._weekly_summary_timezone)
-            title = (
-                f"Weekly Summary | {local_start.strftime('%b')} {local_start.day} to "
-                f"{local_end.strftime('%b')} {local_end.day}, {local_end.year}"
-            )
+            title = "Top Stories"
             overview = (
                 "The most consequential stories across Big's news sources this week. "
                 "Each entry links to its complete source list, updates, and discussion."

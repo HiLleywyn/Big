@@ -364,6 +364,7 @@ async def test_weekly_summary_bootstraps_once_and_updates_same_forum_post(tmp_pa
     assert await service.publish_due_weekly_summaries(now=now) == 1
     first = await database.latest_weekly_summary(guild_id=1, forum_channel_id=2)
     assert first is not None
+    assert first.title == "Top Stories"
     assert first.discord_thread_id == 9000
     assert first.story_ids
 
