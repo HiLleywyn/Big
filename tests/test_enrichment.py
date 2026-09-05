@@ -281,6 +281,12 @@ def test_structured_analysis_rejects_page_modules_and_repeated_results(
             "The jury was deadlocked. Posted September 4, 2026 Show more Top Videos Houston "
             "Texans Foundation celebrating 25 years during Season Premiere video."
         ),
+        (
+            "Rescuers pulled a survivor from the tunnel. 11:01 2 min Reading time Share "
+            "Hundreds of workers remain missing."
+        ),
+        ("Off On Stream on stream logo Masked men blocked traffic near the port."),
+        ("By Reuters Sep 2, 2026 Follow us Officials announced the change. ADVERTISEMENT"),
     ],
 )
 def test_structured_analysis_rejects_search_result_and_video_modules(summary: str) -> None:
