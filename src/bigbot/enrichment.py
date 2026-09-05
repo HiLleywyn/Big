@@ -16,6 +16,7 @@ import httpx2
 from bigbot.analysis_format import repeats_reference
 from bigbot.config import Settings
 from bigbot.domain import Article, Story
+from bigbot.normalization import contains_source_artifacts
 from bigbot.security import neutralize_mentions, safe_external_link
 
 log = logging.getLogger(__name__)
@@ -855,6 +856,8 @@ def _strip_wire_dateline(value: str) -> str:
 
 
 def _has_page_chrome(value: str) -> bool:
+    if contains_source_artifacts(value):
+        return True
     lowered = value.casefold()
     markers = (
         "add al jazeera on google",
@@ -1104,6 +1107,7 @@ def _clean_sentence(value: object, name: str, limit: int) -> str:
     if not isinstance(value, str):
         raise EnrichmentError(f"OpenRouter response has invalid {name}")
     cleaned = re.sub(r"\s+", " ", value.replace("\u2014", "-").replace("\u2013", "-")).strip()
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
     cleaned = _strip_wire_dateline(cleaned)
     cleaned = neutralize_mentions(_strip_emoji(cleaned))
     if not cleaned or len(cleaned) > limit:

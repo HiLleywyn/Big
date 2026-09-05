@@ -26,7 +26,7 @@ from bigbot.domain import (
 )
 from bigbot.enrichment import EnrichmentError, StoryAnalyzer
 from bigbot.feeds.base import FeedFetchError, FeedSource
-from bigbot.normalization import NormalizedArticle, normalize_item
+from bigbot.normalization import NormalizedArticle, contains_source_artifacts, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
 from bigbot.weekly import is_publication_worthy, select_weekly_stories
 
@@ -1131,17 +1131,33 @@ class FeedService:
 
 
 def _publication_quality_error(story: Story, articles: list[Article]) -> str | None:
+    del articles
     if story.analysis_state is AnalysisState.READY and story.analysis:
-        summary = analysis_sections(story.analysis, title=story.title).summary.strip()
-        if len(summary) >= 40 and not repeats_reference(summary, story.title):
+        sections = analysis_sections(story.analysis, title=story.title)
+        summary = sections.summary.strip()
+        if (
+            len(summary) < 60
+            or repeats_reference(summary, story.title)
+            or contains_source_artifacts(summary)
+        ):
+            return "analysis did not contain a clean factual summary beyond the headline"
+        facts: list[str] = []
+        for fact in sections.key_facts:
+            detail = fact.strip()
+            if (
+                len(detail) < 30
+                or repeats_reference(detail, story.title)
+                or contains_source_artifacts(detail)
+                or any(repeats_reference(detail, existing) for existing in facts)
+            ):
+                continue
+            facts.append(detail)
+        if len(facts) >= 2:
             return None
-    for article in articles:
-        detail = article.description.strip()
-        if len(detail) >= 60 and not repeats_reference(detail, article.title):
-            return None
+        return "analysis did not contain at least two distinct supported facts"
     if story.analysis_state is AnalysisState.FAILED:
-        return "analysis failed and no verified detail was available beyond the headline"
-    return "no verified detail was available beyond the headline"
+        return "analysis failed; unverified scraped text cannot pass the publication gate"
+    return "verified analysis was not available"
 
 
 def _newsworthiness_error(story: Story, articles: list[Article]) -> str | None:

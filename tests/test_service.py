@@ -110,9 +110,12 @@ class FakePublisher:
 
 
 class FakeAnalyzer:
-    def __init__(self, *, fail: bool = False, relate_first: bool = False) -> None:
+    def __init__(
+        self, *, fail: bool = False, relate_first: bool = False, thin: bool = False
+    ) -> None:
         self.fail = fail
         self.relate_first = relate_first
+        self.thin = thin
         self.calls: list[tuple[str, ...]] = []
         self.closed = False
         self.models: dict[int, str] = {}
@@ -133,13 +136,23 @@ class FakeAnalyzer:
             if self.relate_first and relationship_candidates
             else ()
         )
+        if self.thin:
+            return StoryAnalysis(
+                text=(
+                    "**Summary**\n"
+                    "Officials announced the event, but the available analysis contains no "
+                    "separate supporting facts or useful context."
+                ),
+                related_story_ids=related,
+            )
         return StoryAnalysis(
             text=(
                 "**Summary**\n"
                 f"Available reporting from {len(articles)} sources confirms concrete details "
                 "about the event.\n\n"
                 "**Key facts**\n"
-                "- Available reports describe the event."
+                "- Officials confirmed the event in a public statement.\n"
+                "- The report identifies when and where the event occurred."
             ),
             related_story_ids=related,
             latest_update=(
@@ -770,7 +783,7 @@ async def test_openrouter_failure_uses_same_finalizer_without_duplicate_post(tmp
     await database.close()
 
 
-async def test_quality_gate_allows_grounded_feed_detail_when_analysis_fails(tmp_path) -> None:
+async def test_quality_gate_rejects_raw_feed_detail_when_analysis_fails(tmp_path) -> None:
     publisher = FakePublisher()
     analyzer = FakeAnalyzer(fail=True)
     database, service = await _service(
@@ -790,8 +803,22 @@ async def test_quality_gate_allows_grounded_feed_detail_when_analysis_fails(tmp_
         publisher="Wire",
     )
 
-    assert await service.process_item(feed, item) == "new_stories"
-    assert publisher.created == 1
+    assert await service.process_item(feed, item) == "skipped"
+    assert publisher.created == 0
+    await database.close()
+
+
+async def test_quality_gate_rejects_thin_summary_without_two_supported_facts(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(thin=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item("thin", "Officials announce an event", "Wire", "https://news.example/thin")
+
+    assert await service.process_item(feed, item) == "skipped"
+    assert publisher.created == 0
     await database.close()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -84,6 +85,39 @@ TOKEN = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
 ENTITY = re.compile(r"\b(?:[A-Z][A-Za-z0-9&.-]+(?:\s+[A-Z][A-Za-z0-9&.-]+){0,3}|[A-Z]{2,})\b")
 NUMBER = re.compile(r"\b\d+(?:\.\d+)?(?:%|\s?(?:bps|basis points?|million|billion|trillion))?\b")
 
+_SOURCE_PAGE_MARKERS = (
+    "access this note the regulatory aspects",
+    "add al jazeera on google",
+    "all content and metadata files",
+    "at a glance requested by the",
+    "bloomberg · bloomberg",
+    "categories israel news",
+    "choose how you want to print",
+    "comment mod policy",
+    "contacts for media",
+    "content files pdf xml",
+    "descriptive metadata (mods)",
+    "directorate-general for",
+    "email your name recipient email",
+    "emirates news agency logo",
+    "google preferred source",
+    "join our whatsapp channel",
+    "mailto:",
+    "metadata download",
+    "notifications explosions heard",
+    "page contents top quote",
+    "policy department for",
+    "preservation metadata (premis)",
+    "print friendly pdf",
+    "print options",
+    "print with images",
+    "read more comments",
+    "real estate listings",
+    "socialsharebtn",
+    "successfully added",
+    "this ad supports our journalism",
+)
+
 
 @dataclass(frozen=True)
 class NormalizedArticle:
@@ -142,6 +176,34 @@ def normalize_headline(value: str) -> str:
     return " ".join(word for word in words if word not in STOPWORDS)
 
 
+def contains_source_artifacts(value: str) -> bool:
+    """Identify navigation, metadata, ads, and repeated page modules in scraped copy."""
+    lowered = re.sub(r"\s+", " ", value.casefold()).strip()
+    if not lowered:
+        return False
+    if any(marker in lowered for marker in _SOURCE_PAGE_MARKERS):
+        return True
+    if len(re.findall(r"\b\d{1,2}:\d{2}\b", lowered)) >= 3:
+        return True
+    if "(published)" in lowered and bool(re.search(r"\b\d+\s+min read\b", lowered)):
+        return True
+    if "section:" in lowered and len(re.findall(r"\b\d+\s+days?\s+ago\b", lowered)) >= 2:
+        return True
+    market_symbols = re.findall(r"\b(?:sensex|nifty|crudeoil|gold|silver)\b", lowered)
+    if len(market_symbols) >= 3:
+        return True
+    words = re.findall(r"[a-z0-9]+", lowered)
+    if any(
+        words[:size] == words[size : size * 2] for size in range(4, min(13, len(words) // 2 + 1))
+    ):
+        return True
+    if len(words) >= 24:
+        shingles = Counter(tuple(words[index : index + 8]) for index in range(len(words) - 7))
+        if any(count >= 3 for count in shingles.values()):
+            return True
+    return False
+
+
 def tokenize(value: str) -> frozenset[str]:
     return frozenset(
         word for word in normalize_headline(value).split() if len(word) > 1 or word.isdigit()
@@ -169,7 +231,12 @@ def extract_keywords(
 
 def normalize_item(item: FeedItem, *, fallback_publisher: str) -> NormalizedArticle:
     title = plain_text(item.title, limit=500) or "Untitled story"
-    summary = plain_text(item.summary, limit=4000) or title
+    candidate_summary = plain_text(item.summary, limit=4000)
+    summary = (
+        candidate_summary
+        if candidate_summary and not contains_source_artifacts(candidate_summary)
+        else title
+    )
     title_tokens = tokenize(title)
     description_tokens = tokenize(summary)
     normalized_title = " ".join(sorted(title_tokens))

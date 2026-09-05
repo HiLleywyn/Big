@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from bigbot.domain import FeedItem
-from bigbot.normalization import normalize_headline, normalize_item, normalize_url
+from bigbot.normalization import (
+    contains_source_artifacts,
+    normalize_headline,
+    normalize_item,
+    normalize_url,
+)
 
 
 def test_url_normalization_removes_tracking_and_normalizes_shape() -> None:
@@ -39,3 +44,38 @@ def test_normalized_article_extracts_entities_numbers_and_events() -> None:
     assert "fed" in normalized.entities
     assert "25 bps" in normalized.numbers
     assert normalized.event_terms == ("cut",)
+
+
+def test_page_navigation_and_unrelated_ad_copy_are_rejected() -> None:
+    value = (
+        "Notifications Explosions heard near Iran's Kharg Island. Email Your Name Recipient "
+        "Email Cancel 0 comments Join our Whatsapp Channel Add Dawn as a trusted source "
+        "Google Preferred Source Read more Comments 500 characters COMMENT MOD POLICY "
+        "Branded Content Meydan Homes reimagines community living."
+    )
+
+    assert contains_source_artifacts(value)
+
+
+def test_repeated_search_result_modules_are_rejected() -> None:
+    module = (
+        "Russian air attacks killed 12 people and injured many more in Kyiv and the "
+        "surrounding region early on Tuesday authorities said"
+    )
+
+    assert contains_source_artifacts(f"Section: {module} 2 days ago {module} 1 day ago {module}")
+
+
+def test_normalization_discards_contaminated_feed_description() -> None:
+    item = FeedItem(
+        "bad",
+        "Explosions heard near Kharg Island",
+        "https://example.com/bad",
+        "Email Your Name Recipient Email Join our Whatsapp Channel Google Preferred Source",
+        "Wire",
+        datetime.now(UTC),
+    )
+
+    normalized = normalize_item(item, fallback_publisher="Wire")
+
+    assert normalized.summary == item.title

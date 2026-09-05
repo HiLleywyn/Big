@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from bigbot.domain import Article, StoryUpdate
-from bigbot.normalization import normalize_url
+from bigbot.normalization import contains_source_artifacts, normalize_url
 from bigbot.security import plain_text, safe_external_link
 
 _MARKDOWN_LINK = re.compile(r"^-\s*\[([^\]]+)]\((https?://[^)\s]+)\)\s*$")
@@ -109,7 +109,11 @@ def story_update_detail(title: str, description: str, *, limit: int = 500) -> st
     """Return the source's actual update detail without repeating its headline."""
     clean_title = plain_text(title, limit=500).strip()
     detail = plain_text(description, limit=limit).strip()
-    if not detail or _comparison_text(detail) == _comparison_text(clean_title):
+    if (
+        not detail
+        or contains_source_artifacts(detail)
+        or _comparison_text(detail) == _comparison_text(clean_title)
+    ):
         return ""
     return detail
 

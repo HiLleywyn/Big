@@ -234,6 +234,37 @@ def test_structured_analysis_preserves_publication_decision() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "contaminated",
+    [
+        (
+            "Notifications Explosions heard near Iran's Kharg Island Email Your Name "
+            "Recipient Email Join our Whatsapp Channel Google Preferred Source "
+            "COMMENT MOD POLICY Branded Content"
+        ),
+        (
+            "Section: Russian air attacks killed 12 people and injured many more in Kyiv "
+            "2 days ago Russian air attacks killed 12 people and injured many more in Kyiv "
+            "1 day ago Russian air attacks killed 12 people and injured many more in Kyiv"
+        ),
+    ],
+)
+def test_structured_analysis_rejects_page_modules_and_repeated_results(
+    contaminated: str,
+) -> None:
+    value = {
+        "summary": contaminated,
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    with pytest.raises(EnrichmentError, match="page chrome"):
+        _validate_result(value, set())
+
+
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:
     async def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
