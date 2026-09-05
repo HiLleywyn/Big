@@ -26,6 +26,7 @@ from bigbot.enrichment import EnrichmentError, StoryAnalyzer
 from bigbot.feeds.base import FeedFetchError, FeedSource
 from bigbot.normalization import NormalizedArticle, normalize_item
 from bigbot.publisher import ForumPublisher, PublishError
+from bigbot.weekly import select_weekly_stories
 
 log = logging.getLogger(__name__)
 PRESENTATION_VERSION = 10
@@ -244,13 +245,18 @@ class FeedService:
             )
             if not force and not bootstrap and not due:
                 continue
-            stories = await self._database.weekly_candidate_stories(
+            candidates = await self._database.weekly_candidate_stories(
                 guild_id=guild_id,
                 forum_channel_id=forum_channel_id,
                 since=week_start,
                 until=current + timedelta(microseconds=1),
+                limit=max(60, self._weekly_summary_max_stories * 10),
+            )
+            selected = select_weekly_stories(
+                candidates,
                 limit=self._weekly_summary_max_stories,
             )
+            stories = [candidate.story for candidate in selected]
             if not stories:
                 continue
             local_start = week_start.astimezone(self._weekly_summary_timezone)
@@ -260,7 +266,7 @@ class FeedService:
                 f"{local_end.strftime('%b')} {local_end.day}, {local_end.year}"
             )
             overview = (
-                "The most-covered stories across Big's news sources this week. "
+                "The most consequential stories across Big's news sources this week. "
                 "Each entry links to its complete source list, updates, and discussion."
             )
             summary = await self._database.save_weekly_summary(
@@ -272,9 +278,7 @@ class FeedService:
                 overview=overview,
                 story_ids=tuple(story.id for story in stories),
             )
-            source_counts = {
-                story.id: len(await self._database.story_articles(story.id)) for story in stories
-            }
+            source_counts = {candidate.story.id: candidate.source_count for candidate in selected}
             try:
                 receipt = await self._publisher.publish_weekly_summary(
                     feed,

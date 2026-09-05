@@ -158,6 +158,13 @@ class Story:
 
 
 @dataclass(frozen=True)
+class WeeklyCandidate:
+    story: Story
+    source_count: int
+    article_count: int
+
+
+@dataclass(frozen=True)
 class StoryUpdate:
     article: Article
     kind: str

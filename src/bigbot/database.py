@@ -18,6 +18,7 @@ from bigbot.domain import (
     Story,
     StoryState,
     StoryUpdate,
+    WeeklyCandidate,
     WeeklySummary,
     parse_time,
     utc_now,
@@ -1170,7 +1171,7 @@ class Database:
         since: datetime,
         until: datetime,
         limit: int,
-    ) -> list[Story]:
+    ) -> list[WeeklyCandidate]:
         cursor = await self._db().execute(
             """
             SELECT stories.*,
@@ -1200,7 +1201,14 @@ class Database:
             """,
             (guild_id, forum_channel_id, since.isoformat(), until.isoformat(), limit),
         )
-        return [_story_from_row(row) async for row in cursor]
+        return [
+            WeeklyCandidate(
+                story=_story_from_row(row),
+                source_count=int(row["outlet_count"]),
+                article_count=int(row["article_count"]),
+            )
+            async for row in cursor
+        ]
 
     async def weekly_summary_for_period(
         self, *, guild_id: int, forum_channel_id: int, week_start: datetime
