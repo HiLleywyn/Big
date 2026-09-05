@@ -203,6 +203,10 @@ def contains_source_artifacts(value: str) -> bool:
         return True
     if "(published)" in lowered and bool(re.search(r"\b\d+\s+min read\b", lowered)):
         return True
+    if re.match(r"^by (?:reuters|the associated press|associated press|ap)\b", lowered) and any(
+        marker in lowered for marker in (" advertisement", " follow us", " share ")
+    ):
+        return True
     if bool(re.search(r"\b\d+\s+min(?:ute)?s?\s+(?:read|reading time)\b", lowered)) and (
         "advertising" in lowered or "read more" in lowered
     ):

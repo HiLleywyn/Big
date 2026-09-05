@@ -114,6 +114,10 @@ def test_normalization_discards_contaminated_feed_description() -> None:
         ),
         ("Off On Stream on stream logo Masked men blocked traffic near the port."),
         ("By Reuters Sep 2, 2026 Follow us Officials announced the change. ADVERTISEMENT"),
+        (
+            "By The Associated Press Updated September 5, 2026 1:58 am Share BEIJING - "
+            "A mudslide killed one person and left 11 missing."
+        ),
     ],
 )
 def test_source_artifacts_detect_search_and_navigation_modules(summary: str) -> None:
