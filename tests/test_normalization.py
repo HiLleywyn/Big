@@ -57,6 +57,15 @@ def test_page_navigation_and_unrelated_ad_copy_are_rejected() -> None:
     assert contains_source_artifacts(value)
 
 
+def test_article_page_headers_and_read_more_modules_are_rejected() -> None:
+    assert contains_source_artifacts(
+        "LATEST NEWS / Middle East You are here Home EMAIL ALERTS Stay on top of the issues"
+    )
+    assert contains_source_artifacts(
+        "00:04 2 min Reading time Story details Advertising Read more Additional copy"
+    )
+
+
 def test_repeated_search_result_modules_are_rejected() -> None:
     module = (
         "Russian air attacks killed 12 people and injured many more in Kyiv and the "

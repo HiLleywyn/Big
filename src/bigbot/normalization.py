@@ -100,8 +100,11 @@ _SOURCE_PAGE_MARKERS = (
     "directorate-general for",
     "email your name recipient email",
     "emirates news agency logo",
+    "facebook email the associated press",
     "google preferred source",
     "join our whatsapp channel",
+    "latest from knkx",
+    "latest news /",
     "mailto:",
     "metadata download",
     "notifications explosions heard",
@@ -116,6 +119,7 @@ _SOURCE_PAGE_MARKERS = (
     "socialsharebtn",
     "successfully added",
     "this ad supports our journalism",
+    "you are here home",
 )
 
 
@@ -186,6 +190,10 @@ def contains_source_artifacts(value: str) -> bool:
     if len(re.findall(r"\b\d{1,2}:\d{2}\b", lowered)) >= 3:
         return True
     if "(published)" in lowered and bool(re.search(r"\b\d+\s+min read\b", lowered)):
+        return True
+    if bool(re.search(r"\b\d+\s+min(?:ute)?s?\s+(?:read|reading time)\b", lowered)) and (
+        "advertising" in lowered or "read more" in lowered
+    ):
         return True
     if "section:" in lowered and len(re.findall(r"\b\d+\s+days?\s+ago\b", lowered)) >= 2:
         return True

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -1141,20 +1142,24 @@ def _publication_quality_error(story: Story, articles: list[Article]) -> str | N
             or contains_source_artifacts(summary)
         ):
             return "analysis did not contain a clean factual summary beyond the headline"
-        facts: list[str] = []
-        for fact in sections.key_facts:
-            detail = fact.strip()
+        statements: list[str] = []
+        candidates = [
+            *re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+|;\s+', summary),
+            *sections.key_facts,
+            *sections.context,
+        ]
+        for candidate in candidates:
+            detail = candidate.strip()
             if (
                 len(detail) < 30
-                or repeats_reference(detail, story.title)
                 or contains_source_artifacts(detail)
-                or any(repeats_reference(detail, existing) for existing in facts)
+                or any(repeats_reference(detail, existing) for existing in statements)
             ):
                 continue
-            facts.append(detail)
-        if len(facts) >= 2:
+            statements.append(detail)
+        if len(statements) >= 2:
             return None
-        return "analysis did not contain at least two distinct supported facts"
+        return "analysis did not contain at least two distinct factual statements"
     if story.analysis_state is AnalysisState.FAILED:
         return "analysis failed; unverified scraped text cannot pass the publication gate"
     return "verified analysis was not available"

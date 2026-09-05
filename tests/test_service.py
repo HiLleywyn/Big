@@ -111,11 +111,17 @@ class FakePublisher:
 
 class FakeAnalyzer:
     def __init__(
-        self, *, fail: bool = False, relate_first: bool = False, thin: bool = False
+        self,
+        *,
+        fail: bool = False,
+        relate_first: bool = False,
+        thin: bool = False,
+        summary_only: bool = False,
     ) -> None:
         self.fail = fail
         self.relate_first = relate_first
         self.thin = thin
+        self.summary_only = summary_only
         self.calls: list[tuple[str, ...]] = []
         self.closed = False
         self.models: dict[int, str] = {}
@@ -142,6 +148,15 @@ class FakeAnalyzer:
                     "**Summary**\n"
                     "Officials announced the event, but the available analysis contains no "
                     "separate supporting facts or useful context."
+                ),
+                related_story_ids=related,
+            )
+        if self.summary_only:
+            return StoryAnalysis(
+                text=(
+                    "**Summary**\n"
+                    "Officials arrived in the capital to begin negotiations on Saturday. "
+                    "The government requested a temporary halt to attacks during the talks."
                 ),
                 related_story_ids=related,
             )
@@ -819,6 +834,25 @@ async def test_quality_gate_rejects_thin_summary_without_two_supported_facts(tmp
 
     assert await service.process_item(feed, item) == "skipped"
     assert publisher.created == 0
+    await database.close()
+
+
+async def test_quality_gate_accepts_two_distinct_facts_in_summary_copy(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(summary_only=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item(
+        "summary-facts",
+        "Officials arrive for negotiations",
+        "Wire",
+        "https://news.example/negotiations",
+    )
+
+    assert await service.process_item(feed, item) == "new_stories"
+    assert publisher.created == 1
     await database.close()
 
 
