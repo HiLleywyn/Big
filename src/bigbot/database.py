@@ -18,6 +18,7 @@ from bigbot.domain import (
     Story,
     StoryState,
     StoryUpdate,
+    WeeklySummary,
     parse_time,
     utc_now,
 )
@@ -211,6 +212,31 @@ ALTER TABLE feeds ADD COLUMN summarization_enabled INTEGER NOT NULL DEFAULT 1
     CHECK (summarization_enabled IN (0, 1));
 """
 
+WEEKLY_SUMMARY_SCHEMA = """
+CREATE TABLE weekly_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    forum_channel_id INTEGER NOT NULL,
+    week_start TEXT NOT NULL,
+    week_end TEXT NOT NULL,
+    title TEXT NOT NULL,
+    overview TEXT NOT NULL,
+    story_ids_json TEXT NOT NULL DEFAULT '[]',
+    discord_thread_id INTEGER,
+    discord_starter_message_id INTEGER,
+    delivery_state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (delivery_state IN ('pending','posted','failed','uncertain')),
+    delivery_error TEXT,
+    generated_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (guild_id, forum_channel_id, week_start)
+);
+
+CREATE INDEX idx_weekly_summaries_latest
+    ON weekly_summaries (guild_id, forum_channel_id, week_start DESC);
+"""
+
 MIGRATIONS = (
     (1, SCHEMA),
     (2, STORY_SCHEMA),
@@ -220,6 +246,7 @@ MIGRATIONS = (
     (6, GUILD_SETTINGS_SCHEMA),
     (7, PRESENTATION_SCHEMA),
     (8, FEED_SUMMARIZATION_SCHEMA),
+    (9, WEEKLY_SUMMARY_SCHEMA),
 )
 
 
@@ -1135,6 +1162,164 @@ class Database:
         )
         return [_story_from_row(row) async for row in cursor]
 
+    async def weekly_candidate_stories(
+        self,
+        *,
+        guild_id: int,
+        forum_channel_id: int,
+        since: datetime,
+        until: datetime,
+        limit: int,
+    ) -> list[Story]:
+        cursor = await self._db().execute(
+            """
+            SELECT stories.*,
+                   COUNT(DISTINCT LOWER(articles.publisher)) AS outlet_count,
+                   COUNT(articles.id) AS article_count
+            FROM stories
+            JOIN articles ON articles.story_id = stories.id
+            WHERE stories.guild_id = ?
+              AND stories.forum_channel_id = ?
+              AND stories.publication_state = 'published'
+              AND stories.state != 'merged'
+              AND stories.cleared_at IS NULL
+              AND COALESCE(articles.published_at, articles.discovered_at) >= ?
+              AND COALESCE(articles.published_at, articles.discovered_at) < ?
+            GROUP BY stories.id
+            ORDER BY outlet_count DESC,
+                     CASE stories.state
+                         WHEN 'breaking' THEN 4
+                         WHEN 'developing' THEN 3
+                         WHEN 'updated' THEN 2
+                         ELSE 1
+                     END DESC,
+                     article_count DESC,
+                     stories.last_updated_at DESC,
+                     stories.id DESC
+            LIMIT ?
+            """,
+            (guild_id, forum_channel_id, since.isoformat(), until.isoformat(), limit),
+        )
+        return [_story_from_row(row) async for row in cursor]
+
+    async def weekly_summary_for_period(
+        self, *, guild_id: int, forum_channel_id: int, week_start: datetime
+    ) -> WeeklySummary | None:
+        cursor = await self._db().execute(
+            """
+            SELECT * FROM weekly_summaries
+            WHERE guild_id = ? AND forum_channel_id = ? AND week_start = ?
+            """,
+            (guild_id, forum_channel_id, week_start.isoformat()),
+        )
+        row = await cursor.fetchone()
+        return _weekly_summary_from_row(row) if row is not None else None
+
+    async def latest_weekly_summary(
+        self, *, guild_id: int | None = None, forum_channel_id: int | None = None
+    ) -> WeeklySummary | None:
+        conditions: list[str] = ["delivery_state = 'posted'"]
+        values: list[object] = []
+        if guild_id is not None:
+            conditions.append("guild_id = ?")
+            values.append(guild_id)
+        if forum_channel_id is not None:
+            conditions.append("forum_channel_id = ?")
+            values.append(forum_channel_id)
+        cursor = await self._db().execute(
+            f"""
+            SELECT * FROM weekly_summaries
+            WHERE {" AND ".join(conditions)}
+            ORDER BY week_start DESC, id DESC
+            LIMIT 1
+            """,
+            values,
+        )
+        row = await cursor.fetchone()
+        return _weekly_summary_from_row(row) if row is not None else None
+
+    async def save_weekly_summary(
+        self,
+        *,
+        guild_id: int,
+        forum_channel_id: int,
+        week_start: datetime,
+        week_end: datetime,
+        title: str,
+        overview: str,
+        story_ids: tuple[int, ...],
+    ) -> WeeklySummary:
+        now = utc_now().isoformat()
+        await self._db().execute(
+            """
+            INSERT INTO weekly_summaries (
+                guild_id, forum_channel_id, week_start, week_end, title, overview,
+                story_ids_json, delivery_state, generated_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            ON CONFLICT(guild_id, forum_channel_id, week_start) DO UPDATE SET
+                week_end = excluded.week_end,
+                title = excluded.title,
+                overview = excluded.overview,
+                story_ids_json = excluded.story_ids_json,
+                generated_at = excluded.generated_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                guild_id,
+                forum_channel_id,
+                week_start.isoformat(),
+                week_end.isoformat(),
+                title,
+                overview,
+                json.dumps(story_ids),
+                now,
+                now,
+                now,
+            ),
+        )
+        await self._db().commit()
+        summary = await self.weekly_summary_for_period(
+            guild_id=guild_id,
+            forum_channel_id=forum_channel_id,
+            week_start=week_start,
+        )
+        if summary is None:
+            raise RuntimeError("weekly summary was not saved")
+        return summary
+
+    async def mark_weekly_summary_published(
+        self, summary_id: int, *, thread_id: int, message_id: int
+    ) -> None:
+        now = utc_now().isoformat()
+        await self._db().execute(
+            """
+            UPDATE weekly_summaries
+            SET discord_thread_id = ?, discord_starter_message_id = ?,
+                delivery_state = 'posted', delivery_error = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (thread_id, message_id, now, summary_id),
+        )
+        await self._db().commit()
+
+    async def mark_weekly_summary_failed(
+        self, summary_id: int, *, error: str, uncertain: bool
+    ) -> None:
+        await self._db().execute(
+            """
+            UPDATE weekly_summaries
+            SET delivery_state = ?, delivery_error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "uncertain" if uncertain else "failed",
+                error[:1000],
+                utc_now().isoformat(),
+                summary_id,
+            ),
+        )
+        await self._db().commit()
+
     async def mark_story_published(self, story_id: int, *, thread_id: int, message_id: int) -> None:
         await self._db().execute(
             """
@@ -1764,6 +1949,33 @@ def _story_from_row(row: aiosqlite.Row) -> Story:
         analysis_state=AnalysisState(str(row["analysis_state"])),
         analysis_error=(str(row["analysis_error"]) if row["analysis_error"] is not None else None),
         analysis_updated_at=parse_time(row["analysis_updated_at"]),
+    )
+
+
+def _weekly_summary_from_row(row: aiosqlite.Row) -> WeeklySummary:
+    week_start = parse_time(row["week_start"])
+    week_end = parse_time(row["week_end"])
+    generated_at = parse_time(row["generated_at"])
+    updated_at = parse_time(row["updated_at"])
+    if week_start is None or week_end is None or generated_at is None or updated_at is None:
+        raise ValueError("weekly summary has an invalid timestamp")
+    return WeeklySummary(
+        id=int(row["id"]),
+        guild_id=int(row["guild_id"]),
+        forum_channel_id=int(row["forum_channel_id"]),
+        week_start=week_start,
+        week_end=week_end,
+        title=str(row["title"]),
+        overview=str(row["overview"]),
+        story_ids=tuple(int(value) for value in json.loads(str(row["story_ids_json"]))),
+        discord_thread_id=(int(row["discord_thread_id"]) if row["discord_thread_id"] else None),
+        discord_starter_message_id=(
+            int(row["discord_starter_message_id"]) if row["discord_starter_message_id"] else None
+        ),
+        delivery_state=DeliveryState(str(row["delivery_state"])),
+        delivery_error=(str(row["delivery_error"]) if row["delivery_error"] else None),
+        generated_at=generated_at,
+        updated_at=updated_at,
     )
 
 

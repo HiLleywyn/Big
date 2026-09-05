@@ -52,6 +52,15 @@ class RetentionOptions:
 
 
 @dataclass(frozen=True)
+class WeeklySummaryOptions:
+    enabled: bool = True
+    weekday: int = 5
+    hour: int = 12
+    timezone: str = "America/Chicago"
+    max_stories: int = 8
+
+
+@dataclass(frozen=True)
 class AppConfig:
     guild_id: int | None = None
     forum_channel_id: int | None = None
@@ -59,6 +68,7 @@ class AppConfig:
     clustering: ClusteringOptions = ClusteringOptions()
     updates: UpdateOptions = UpdateOptions()
     retention: RetentionOptions = RetentionOptions()
+    weekly_summary: WeeklySummaryOptions = WeeklySummaryOptions()
     tag_mappings: dict[str, tuple[str, ...]] | None = None
     source_priorities: dict[str, int] | None = None
     feeds: tuple[FeedSpec, ...] = ()
@@ -153,6 +163,19 @@ class Settings:
             raise ConfigurationError("retention.action must be archive or delete")
         if not 1 <= retention.batch_size <= 100:
             raise ConfigurationError("retention.batch_size must be between 1 and 100")
+        weekly = self.app_config.weekly_summary
+        if not 0 <= weekly.weekday <= 6:
+            raise ConfigurationError("weekly_summary.weekday must be between 0 and 6")
+        if not 0 <= weekly.hour <= 23:
+            raise ConfigurationError("weekly_summary.hour must be between 0 and 23")
+        if not 3 <= weekly.max_stories <= 12:
+            raise ConfigurationError("weekly_summary.max_stories must be between 3 and 12")
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(weekly.timezone)
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError("weekly_summary.timezone is invalid") from exc
         for feed in self.app_config.feeds:
             if not 300 <= feed.interval_seconds <= 86400:
                 raise ConfigurationError(
@@ -215,6 +238,7 @@ def load_app_config(path: Path) -> AppConfig:
     clustering_raw = _mapping(raw.get("clustering"), "clustering")
     updates_raw = _mapping(raw.get("update_behavior"), "update_behavior")
     retention_raw = _mapping(raw.get("retention"), "retention")
+    weekly_raw = _mapping(raw.get("weekly_summary"), "weekly_summary")
     default_interval = _positive_int(
         raw.get("polling_interval_seconds", 900), "polling_interval_seconds"
     )
@@ -313,6 +337,18 @@ def load_app_config(path: Path) -> AppConfig:
                 "retention.batch_size",
             ),
         ),
+        weekly_summary=WeeklySummaryOptions(
+            enabled=_yaml_boolean(weekly_raw.get("enabled", True), "weekly_summary.enabled"),
+            weekday=_nonnegative_int(weekly_raw.get("weekday", 5), "weekly_summary.weekday"),
+            hour=_nonnegative_int(weekly_raw.get("hour", 12), "weekly_summary.hour"),
+            timezone=_text(
+                weekly_raw.get("timezone", "America/Chicago"),
+                "weekly_summary.timezone",
+            ),
+            max_stories=_positive_int(
+                weekly_raw.get("max_stories", 8), "weekly_summary.max_stories"
+            ),
+        ),
         tag_mappings=tag_mappings,
         source_priorities=priorities,
         feeds=tuple(feeds),
@@ -347,6 +383,16 @@ def _positive_int(value: object, name: str) -> int:
         raise ConfigurationError(f"{name} must be an integer") from exc
     if number <= 0:
         raise ConfigurationError(f"{name} must be positive")
+    return number
+
+
+def _nonnegative_int(value: object, name: str) -> int:
+    try:
+        number = int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"{name} must be an integer") from exc
+    if number < 0:
+        raise ConfigurationError(f"{name} must not be negative")
     return number
 
 

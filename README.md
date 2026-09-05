@@ -151,6 +151,14 @@ retention:
   action: archive
   batch_size: 25
 
+weekly_summary:
+  enabled: true
+  # Monday is 0. Saturday is 5.
+  weekday: 5
+  hour: 12
+  timezone: America/Chicago
+  max_stories: 8
+
 source_priorities:
   Federal Reserve: 100
   PBS News: 95
@@ -179,6 +187,21 @@ forum. Older entries are recorded as skipped and remain deduplicated after resta
 Retention is off until `retention.clear_after_days` is set. `archive` closes old forum threads
 while keeping discussion history. `delete` removes the forum thread and should only be used when
 that is the server policy. Cleanup runs in bounded batches.
+
+## Weekly summaries
+
+Big creates one weekly summary for each configured forum. The first summary is created when the
+feature starts, then the same post is refreshed at the configured time on Saturday. Each later
+week gets one new post. The current post is pinned and the previous weekly post is unpinned.
+
+Stories are ranked by distinct publisher coverage, reporting volume, story state, and recency.
+The digest reuses the factual summaries already stored for each story. It does not make a second
+model request or create a separate analysis pipeline. The database keeps one record per forum and
+week, so restarts cannot create duplicate weekly posts.
+
+The normal public story API includes the current weekly summary. The website reads that record and
+shows it as the pinned weekly item on the news page. Discord and the website therefore stay in sync
+without a separate website job.
 
 ## Story clustering
 

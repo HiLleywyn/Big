@@ -16,6 +16,7 @@ from bigbot.domain import (
     Story,
     StoryState,
     StoryUpdate,
+    WeeklySummary,
 )
 from bigbot.enrichment import EnrichmentError, StoryAnalysis
 from bigbot.normalization import normalize_item
@@ -46,6 +47,8 @@ class FakePublisher:
         self.updated_story_ids: list[int] = []
         self.related_by_story: dict[int, tuple[int, ...]] = {}
         self.analysis_by_story: dict[int, str | None] = {}
+        self.weekly_published: list[int] = []
+        self.weekly_unpinned: list[int] = []
 
     async def create_story(
         self,
@@ -87,6 +90,19 @@ class FakePublisher:
 
     async def delete_story(self, story: Story) -> None:
         self.deleted += 1
+
+    async def publish_weekly_summary(
+        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+    ) -> PublishReceipt:
+        del feed, stories
+        self.weekly_published.append(summary.id)
+        return PublishReceipt(
+            summary.discord_thread_id or 9000,
+            summary.discord_starter_message_id or 9001,
+        )
+
+    async def unpin_weekly_summary(self, summary: WeeklySummary) -> None:
+        self.weekly_unpinned.append(summary.id)
 
 
 class FakeAnalyzer:
@@ -233,6 +249,41 @@ async def test_multiple_publishers_become_one_forum_story(tmp_path) -> None:
     updates = await database.story_updates(stored.id)
     assert len(updates) == 1
     assert updates[0].detail == "Officials confirmed additional details."
+    await database.close()
+
+
+async def test_weekly_summary_bootstraps_once_and_updates_same_forum_post(tmp_path) -> None:
+    publisher = FakePublisher()
+    database, service = await _service(tmp_path / "big.db", publisher, FakeSource(()))
+    feed = await _feed(database)
+    await service.process_item(
+        feed,
+        _item(
+            "weekly-1",
+            "Central bank publishes its weekly decision",
+            "Wire",
+            "https://example.com/weekly-1",
+        ),
+    )
+
+    now = datetime.now(UTC)
+    assert await service.publish_due_weekly_summaries(now=now) == 1
+    first = await database.latest_weekly_summary(guild_id=1, forum_channel_id=2)
+    assert first is not None
+    assert first.discord_thread_id == 9000
+    assert first.story_ids
+
+    assert await service.publish_due_weekly_summaries(now=now + timedelta(seconds=1)) == 0
+    assert (
+        await service.publish_due_weekly_summaries(now=now + timedelta(seconds=2), force=True) == 1
+    )
+    updated = await database.latest_weekly_summary(guild_id=1, forum_channel_id=2)
+    assert updated is not None
+    assert updated.id == first.id
+    assert updated.discord_thread_id == first.discord_thread_id
+    assert publisher.weekly_published == [first.id, first.id]
+    assert publisher.weekly_unpinned == []
+    await service.close()
     await database.close()
 
 

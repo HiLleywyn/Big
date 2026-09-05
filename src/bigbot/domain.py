@@ -169,3 +169,21 @@ class StoryUpdate:
 class PublishReceipt:
     thread_id: int
     message_id: int
+
+
+@dataclass(frozen=True)
+class WeeklySummary:
+    id: int
+    guild_id: int
+    forum_channel_id: int
+    week_start: datetime
+    week_end: datetime
+    title: str
+    overview: str
+    story_ids: tuple[int, ...]
+    discord_thread_id: int | None
+    discord_starter_message_id: int | None
+    delivery_state: DeliveryState
+    delivery_error: str | None
+    generated_at: datetime
+    updated_at: datetime

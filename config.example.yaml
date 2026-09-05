@@ -24,6 +24,14 @@ retention:
   action: archive
   batch_size: 25
 
+weekly_summary:
+  enabled: true
+  # Monday is 0. Saturday is 5.
+  weekday: 5
+  hour: 12
+  timezone: America/Chicago
+  max_stories: 8
+
 # Big includes a carefully bounded 20-tag classifier. Entries here extend those rules.
 tag_mappings:
   Markets: [treasury auction, wall street]

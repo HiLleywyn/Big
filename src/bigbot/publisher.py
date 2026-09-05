@@ -7,7 +7,15 @@ from typing import Protocol
 import discord
 
 from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
-from bigbot.domain import AnalysisState, Article, Feed, PublishReceipt, Story, StoryUpdate
+from bigbot.domain import (
+    AnalysisState,
+    Article,
+    Feed,
+    PublishReceipt,
+    Story,
+    StoryUpdate,
+    WeeklySummary,
+)
 from bigbot.security import (
     forum_title,
     neutralize_mentions,
@@ -54,6 +62,12 @@ class ForumPublisher(Protocol):
     async def archive_story(self, story: Story) -> None: ...
 
     async def delete_story(self, story: Story) -> None: ...
+
+    async def publish_weekly_summary(
+        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+    ) -> PublishReceipt: ...
+
+    async def unpin_weekly_summary(self, summary: WeeklySummary) -> None: ...
 
 
 class DiscordForumPublisher:
@@ -214,6 +228,100 @@ class DiscordForumPublisher:
         except discord.HTTPException as exc:
             raise _publish_error("delete old forum story", exc) from exc
 
+    async def publish_weekly_summary(
+        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+    ) -> PublishReceipt:
+        embed = _weekly_summary_embed(summary, stories, public_site_url=self._public_site_url)
+        content = f"**WEEKLY SUMMARY**  |  <t:{int(summary.week_end.timestamp())}:D>"
+        if summary.discord_thread_id is None or summary.discord_starter_message_id is None:
+            forum = await self._forum(feed.forum_channel_id, feed.guild_id)
+            tags = self._resolve_tags(forum, ("News",), feed.tag_ids)
+            try:
+                icon = _brand_icon_file()
+                try:
+                    result = await forum.create_thread(
+                        name=forum_title(summary.title),
+                        content=content,
+                        embed=embed,
+                        file=icon,
+                        applied_tags=tags,
+                        auto_archive_duration=1440,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        reason=f"Big weekly summary {summary.id}",
+                    )
+                finally:
+                    icon.close()
+            except discord.HTTPException as exc:
+                raise _publish_error("create weekly summary", exc) from exc
+            await self._pin_weekly_thread(result.thread, summary.id)
+            return PublishReceipt(thread_id=result.thread.id, message_id=result.message.id)
+
+        thread = await self._thread(summary.discord_thread_id)
+        try:
+            if thread.archived:
+                await thread.edit(archived=False, reason=f"Big weekly summary {summary.id}")
+            if thread.name != forum_title(summary.title):
+                await thread.edit(
+                    name=forum_title(summary.title), reason=f"Big weekly summary {summary.id} title"
+                )
+            await self._pin_weekly_thread(thread, summary.id)
+            starter = await thread.fetch_message(summary.discord_starter_message_id)
+            if not any(item.filename == BRAND_ICON_FILENAME for item in starter.attachments):
+                icon = _brand_icon_file()
+                try:
+                    await starter.edit(
+                        content=content,
+                        embed=embed,
+                        attachments=[*starter.attachments, icon],
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                finally:
+                    icon.close()
+            else:
+                await starter.edit(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except discord.HTTPException as exc:
+            raise _publish_error("update weekly summary", exc) from exc
+        return PublishReceipt(thread_id=thread.id, message_id=summary.discord_starter_message_id)
+
+    async def unpin_weekly_summary(self, summary: WeeklySummary) -> None:
+        if summary.discord_thread_id is None:
+            return
+        try:
+            thread = await self._thread(summary.discord_thread_id)
+            if thread.flags.pinned:
+                await thread.edit(pinned=False, reason=f"Superseded by weekly summary {summary.id}")
+        except (discord.Forbidden, discord.NotFound):
+            return
+        except discord.HTTPException as exc:
+            log.warning(
+                "Discord could not unpin previous weekly summary",
+                extra={
+                    "event": "weekly_summary_unpin_failed",
+                    "summary_id": summary.id,
+                    "status": exc.status,
+                },
+            )
+
+    @staticmethod
+    async def _pin_weekly_thread(thread: discord.Thread, summary_id: int) -> None:
+        if thread.flags.pinned:
+            return
+        try:
+            await thread.edit(pinned=True, reason=f"Big weekly summary {summary_id}")
+        except discord.HTTPException as exc:
+            log.warning(
+                "Discord could not pin weekly summary",
+                extra={
+                    "event": "weekly_summary_pin_failed",
+                    "summary_id": summary_id,
+                    "status": exc.status,
+                },
+            )
+
     async def _forum(self, channel_id: int, guild_id: int) -> discord.ForumChannel:
         channel = self._client.get_channel(channel_id)
         if channel is None:
@@ -310,6 +418,25 @@ class DryRunForumPublisher:
         log.info(
             "dry-run story deleted",
             extra={"event": "dry_run_delete", "story_id": story.id},
+        )
+
+    async def publish_weekly_summary(
+        self, feed: Feed, summary: WeeklySummary, stories: list[Story]
+    ) -> PublishReceipt:
+        del feed, stories
+        self._next_id += 1
+        thread_id = summary.discord_thread_id or self._next_id
+        message_id = summary.discord_starter_message_id or self._next_id
+        log.info(
+            "dry-run weekly summary published",
+            extra={"event": "dry_run_weekly_summary", "summary_id": summary.id},
+        )
+        return PublishReceipt(thread_id=thread_id, message_id=message_id)
+
+    async def unpin_weekly_summary(self, summary: WeeklySummary) -> None:
+        log.info(
+            "dry-run weekly summary unpinned",
+            extra={"event": "dry_run_weekly_unpin", "summary_id": summary.id},
         )
 
 
@@ -462,6 +589,55 @@ def _update_embed(article: Article, *, detail: str | None = None) -> discord.Emb
     )
     embed.set_footer(text="Published", icon_url=BRAND_ICON_URI)
     return embed
+
+
+def _weekly_summary_embed(
+    summary: WeeklySummary,
+    stories: list[Story],
+    *,
+    public_site_url: str,
+) -> discord.Embed:
+    sections = [plain_text(summary.overview, limit=500)]
+    for index, story in enumerate(stories, start=1):
+        title = forum_title(story.title)
+        link = _web_story_url(public_site_url, story.id)
+        detail = _weekly_story_summary(story)
+        section = f"**{index}. [{title}]({link})**\n{detail}"
+        if len("\n\n".join((*sections, section))) > 3900:
+            break
+        sections.append(section)
+    embed = discord.Embed(
+        title=summary.title,
+        description="\n\n".join(sections),
+        url=f"{public_site_url.rstrip('/')}/news/",
+        color=discord.Color.orange(),
+        timestamp=summary.generated_at,
+    )
+    embed.set_footer(text="Week ending", icon_url=BRAND_ICON_URI)
+    return embed
+
+
+def _weekly_story_summary(story: Story) -> str:
+    source = (
+        story.analysis
+        if story.analysis_state is AnalysisState.READY and story.analysis
+        else story.summary
+    )
+    body = analysis_display(source, title=story.title).body
+    lines: list[str] = []
+    in_summary = False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        heading = line.replace("**", "").casefold()
+        if heading == "summary":
+            in_summary = True
+            continue
+        if in_summary and heading in {"key facts", "context", "unclear or disputed"}:
+            break
+        if in_summary and line:
+            lines.append(line.removeprefix("- "))
+    value = " ".join(lines).strip() or plain_text(story.summary, limit=320)
+    return plain_text(value, limit=320)
 
 
 def _state_color(story: Story) -> discord.Color:

@@ -22,6 +22,9 @@ def test_defaults_are_safe_and_ai_is_optional(monkeypatch, tmp_path) -> None:
     assert settings.ai_zdr
     assert settings.openrouter_model == "deepseek/deepseek-v4-flash-0731"
     assert settings.related_story_limit == 8
+    assert settings.app_config.weekly_summary.enabled
+    assert settings.app_config.weekly_summary.weekday == 5
+    assert settings.app_config.weekly_summary.timezone == "America/Chicago"
 
 
 def test_run_requires_discord_token(monkeypatch, tmp_path) -> None:
@@ -105,6 +108,27 @@ retention:
     assert config.retention.clear_after_days == 14
     assert config.retention.action == "delete"
     assert config.retention.batch_size == 10
+
+
+def test_yaml_weekly_summary_configuration(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+weekly_summary:
+  enabled: true
+  weekday: 5
+  hour: 9
+  timezone: America/Chicago
+  max_stories: 10
+""",
+        encoding="utf-8",
+    )
+    weekly = load_app_config(path).weekly_summary
+    assert weekly.enabled
+    assert weekly.weekday == 5
+    assert weekly.hour == 9
+    assert weekly.timezone == "America/Chicago"
+    assert weekly.max_stories == 10
 
 
 def test_yaml_rejects_invalid_retention_action(tmp_path) -> None:

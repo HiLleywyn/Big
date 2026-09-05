@@ -117,6 +117,26 @@ async def test_public_feed_mirrors_published_story_sources_and_discord_link(tmp_
     assert payload["total"] == 1
     assert payload["has_more"] is False
     assert payload["tag_counts"] == {"Politics": 1, "World": 1}
+    week_start = datetime(2026, 8, 30, tzinfo=UTC)
+    weekly = await database.save_weekly_summary(
+        guild_id=10,
+        forum_channel_id=20,
+        week_start=week_start,
+        week_end=published,
+        title="Weekly Summary | Aug 30 to Sep 2, 2026",
+        overview="The most-covered stories this week.",
+        story_ids=(story.id,),
+    )
+    await database.mark_weekly_summary_published(weekly.id, thread_id=60, message_id=70)
+    with_weekly = await build_story_feed(
+        database,
+        query=StoryFeedQuery(limit=10),
+        public_site_url="https://bigif.org",
+    )
+    weekly_item = with_weekly["weekly_summary"]
+    assert isinstance(weekly_item, dict)
+    assert weekly_item["discord_url"] == "https://discord.com/channels/10/60"
+    assert weekly_item["stories"][0]["id"] == story.id
 
     detail = await build_story_detail(
         database, story_id=story.id, public_site_url="https://bigif.org"

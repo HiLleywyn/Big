@@ -4,7 +4,8 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from bigbot.classification import TAG_CATALOG, StoryClassifier
 from bigbot.clustering import StoryClusterer
@@ -95,6 +96,11 @@ class FeedService:
         cluster_split_threshold: float = 0.45,
         cluster_maintenance_interval_seconds: int = 1800,
         cluster_maintenance_batch_size: int = 50,
+        weekly_summary_enabled: bool = True,
+        weekly_summary_weekday: int = 5,
+        weekly_summary_hour: int = 12,
+        weekly_summary_timezone: str = "America/Chicago",
+        weekly_summary_max_stories: int = 8,
     ) -> None:
         self._database = database
         self._sources = sources
@@ -123,6 +129,12 @@ class FeedService:
         self._cluster_maintenance_interval = timedelta(seconds=cluster_maintenance_interval_seconds)
         self._cluster_maintenance_batch_size = cluster_maintenance_batch_size
         self._next_cluster_maintenance = utc_now()
+        self._weekly_summary_enabled = weekly_summary_enabled
+        self._weekly_summary_weekday = weekly_summary_weekday
+        self._weekly_summary_hour = weekly_summary_hour
+        self._weekly_summary_timezone = ZoneInfo(weekly_summary_timezone)
+        self._weekly_summary_max_stories = weekly_summary_max_stories
+        self._next_weekly_check = utc_now()
         self._feed_locks: dict[int, asyncio.Lock] = {}
         self._story_locks: dict[int, asyncio.Lock] = {}
         self._cluster_lock = asyncio.Lock()
@@ -139,6 +151,9 @@ class FeedService:
                 ):
                     await self.maintain_story_clusters()
                     self._next_cluster_maintenance = utc_now() + self._cluster_maintenance_interval
+                if self._weekly_summary_enabled and utc_now() >= self._next_weekly_check:
+                    await self.publish_due_weekly_summaries()
+                    self._next_weekly_check = utc_now() + timedelta(minutes=5)
                 for feed in await self._database.due_feeds(utc_now()):
                     try:
                         await self.poll_feed(feed.id)
@@ -187,6 +202,119 @@ class FeedService:
                 },
             )
         return cleared
+
+    async def publish_due_weekly_summaries(
+        self, *, now: datetime | None = None, force: bool = False
+    ) -> int:
+        if not self._weekly_summary_enabled:
+            return 0
+        current = (now or utc_now()).astimezone(UTC)
+        week_start, scheduled = self._weekly_period(current)
+        feeds = await self._database.list_feeds()
+        destinations: dict[tuple[int, int], Feed] = {}
+        for feed in feeds:
+            if feed.state.value == "active":
+                destinations.setdefault((feed.guild_id, feed.forum_channel_id), feed)
+        published = 0
+        for (guild_id, forum_channel_id), feed in destinations.items():
+            existing = await self._database.weekly_summary_for_period(
+                guild_id=guild_id,
+                forum_channel_id=forum_channel_id,
+                week_start=week_start,
+            )
+            latest = await self._database.latest_weekly_summary(
+                guild_id=guild_id,
+                forum_channel_id=forum_channel_id,
+            )
+            bootstrap = latest is None and existing is None
+            if existing is not None and existing.delivery_state is DeliveryState.UNCERTAIN:
+                log.error(
+                    "weekly summary has uncertain Discord state and will not be retried",
+                    extra={
+                        "event": "weekly_summary_uncertain",
+                        "summary_id": existing.id,
+                    },
+                )
+                continue
+            retry = existing is not None and existing.delivery_state is DeliveryState.FAILED
+            due = current >= scheduled and (
+                existing is None or existing.generated_at < scheduled or retry
+            )
+            if not force and not bootstrap and not due:
+                continue
+            stories = await self._database.weekly_candidate_stories(
+                guild_id=guild_id,
+                forum_channel_id=forum_channel_id,
+                since=week_start,
+                until=current + timedelta(microseconds=1),
+                limit=self._weekly_summary_max_stories,
+            )
+            if not stories:
+                continue
+            local_start = week_start.astimezone(self._weekly_summary_timezone)
+            local_end = current.astimezone(self._weekly_summary_timezone)
+            title = (
+                f"Weekly Summary | {local_start.strftime('%b')} {local_start.day} to "
+                f"{local_end.strftime('%b')} {local_end.day}, {local_end.year}"
+            )
+            overview = (
+                "The most-covered stories across Big's news sources this week. "
+                "Each entry links to its complete source list, updates, and discussion."
+            )
+            summary = await self._database.save_weekly_summary(
+                guild_id=guild_id,
+                forum_channel_id=forum_channel_id,
+                week_start=week_start,
+                week_end=current,
+                title=title,
+                overview=overview,
+                story_ids=tuple(story.id for story in stories),
+            )
+            try:
+                receipt = await self._publisher.publish_weekly_summary(feed, summary, stories)
+            except PublishError as exc:
+                await self._database.mark_weekly_summary_failed(
+                    summary.id,
+                    error=str(exc),
+                    uncertain=exc.uncertain,
+                )
+                log.exception(
+                    "weekly summary publish failed",
+                    extra={"event": "weekly_summary_failed", "summary_id": summary.id},
+                )
+                continue
+            await self._database.mark_weekly_summary_published(
+                summary.id,
+                thread_id=receipt.thread_id,
+                message_id=receipt.message_id,
+            )
+            if latest is not None and latest.id != summary.id:
+                await self._publisher.unpin_weekly_summary(latest)
+            published += 1
+            log.info(
+                "weekly summary published",
+                extra={
+                    "event": "weekly_summary_published",
+                    "summary_id": summary.id,
+                    "story_count": len(stories),
+                    "scheduled_for": scheduled.isoformat(),
+                },
+            )
+        return published
+
+    def _weekly_period(self, now: datetime) -> tuple[datetime, datetime]:
+        local = now.astimezone(self._weekly_summary_timezone)
+        period_start_weekday = (self._weekly_summary_weekday + 1) % 7
+        days_since_start = (local.weekday() - period_start_weekday) % 7
+        start_date = local.date() - timedelta(days=days_since_start)
+        start_local = datetime.combine(start_date, time.min, self._weekly_summary_timezone)
+        scheduled_date = start_date + timedelta(days=6)
+        scheduled_local = datetime.combine(
+            scheduled_date,
+            time(hour=self._weekly_summary_hour),
+            self._weekly_summary_timezone,
+        )
+        return start_local.astimezone(UTC), scheduled_local.astimezone(UTC)
 
     async def maintain_story_clusters(self) -> ClusterMaintenanceReport:
         if not self._automatic_cluster_management:

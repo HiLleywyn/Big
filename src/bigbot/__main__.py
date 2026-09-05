@@ -87,6 +87,11 @@ async def _dry_run(settings: Settings) -> None:
         cluster_split_threshold=config.clustering.split_threshold,
         cluster_maintenance_interval_seconds=(config.clustering.maintenance_interval_seconds),
         cluster_maintenance_batch_size=config.clustering.maintenance_batch_size,
+        weekly_summary_enabled=config.weekly_summary.enabled,
+        weekly_summary_weekday=config.weekly_summary.weekday,
+        weekly_summary_hour=config.weekly_summary.hour,
+        weekly_summary_timezone=config.weekly_summary.timezone,
+        weekly_summary_max_stories=config.weekly_summary.max_stories,
     )
 
     async def status() -> dict[str, object]:

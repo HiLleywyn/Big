@@ -8,7 +8,7 @@ from datetime import datetime
 
 from bigbot.analysis_format import analysis_display, story_update_detail, visible_story_updates
 from bigbot.database import Database
-from bigbot.domain import AnalysisState, Article, Story, parse_time, utc_now
+from bigbot.domain import AnalysisState, Article, Story, WeeklySummary, parse_time, utc_now
 from bigbot.normalization import normalize_url
 from bigbot.security import forum_title, publisher_label, safe_external_link
 
@@ -47,6 +47,7 @@ async def build_story_feed(
         "has_more": has_more,
         "next_cursor": next_cursor,
         "tag_counts": await database.published_story_tag_counts(search=request.search),
+        "weekly_summary": await _latest_weekly_summary_item(database, public_site_url),
         "stories": items,
     }
 
@@ -122,6 +123,78 @@ async def _story_item(database: Database, story: Story, public_site_url: str) ->
             for candidate in related
         ],
     }
+
+
+async def _latest_weekly_summary_item(
+    database: Database, public_site_url: str
+) -> dict[str, object] | None:
+    summary = await database.latest_weekly_summary()
+    if summary is None:
+        return None
+    stories: list[Story] = []
+    for story_id in summary.story_ids:
+        story = await database.get_published_story(story_id)
+        if story is not None:
+            stories.append(story)
+    return _weekly_summary_item(summary, stories, public_site_url)
+
+
+def _weekly_summary_item(
+    summary: WeeklySummary, stories: list[Story], public_site_url: str
+) -> dict[str, object]:
+    discord_url = (
+        f"https://discord.com/channels/{summary.guild_id}/{summary.discord_thread_id}"
+        if summary.discord_thread_id is not None
+        else None
+    )
+    return {
+        "id": summary.id,
+        "title": summary.title,
+        "overview": summary.overview,
+        "week_start": summary.week_start.isoformat(),
+        "week_end": summary.week_end.isoformat(),
+        "generated_at": summary.generated_at.isoformat(),
+        "discord_url": discord_url,
+        "web_url": f"{public_site_url.rstrip('/')}/news/",
+        "stories": [
+            {
+                "id": story.id,
+                "title": forum_title(story.title),
+                "summary": _summary_text(story),
+                "tags": list(story.tags),
+                "web_url": _story_url(public_site_url, story.id),
+                "discord_url": (
+                    f"https://discord.com/channels/{story.guild_id}/{story.discord_thread_id}"
+                    if story.discord_thread_id is not None
+                    else None
+                ),
+            }
+            for story in stories
+        ],
+    }
+
+
+def _summary_text(story: Story) -> str:
+    value = (
+        story.analysis
+        if story.analysis_state is AnalysisState.READY and story.analysis
+        else story.summary
+    )
+    body = analysis_display(value, title=story.title).body
+    lines: list[str] = []
+    in_summary = False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        heading = line.replace("**", "").casefold()
+        if heading == "summary":
+            in_summary = True
+            continue
+        if in_summary and heading in {"key facts", "context", "unclear or disputed"}:
+            break
+        if in_summary and line:
+            lines.append(line.removeprefix("- "))
+    result = " ".join(lines).strip() or story.summary
+    return result[:500].rstrip()
 
 
 def _encode_cursor(story: Story) -> str:
