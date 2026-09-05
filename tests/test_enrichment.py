@@ -74,7 +74,7 @@ def article(article_id: int, publisher: str) -> Article:
 def test_fallback_summary_removes_reuters_page_chrome_and_stops_cleanly() -> None:
     value = (
         "By Thomson Reuters Sep 3, 2026 | 5:01 AM By Helen Coster NEW YORK, "
-        "Sept 3 (Reuters) - Less than a year ago, officials supported the project. "
+        "Sept 3 (Reuters) \u2013 Less than a year ago, officials supported the project. "
         "Now they are calling for new restrictions. Across the country, another "
         "unfinished sentence about the U.S."
     )
@@ -105,6 +105,16 @@ def test_fallback_summary_discards_mid_sentence_prefix() -> None:
     )
 
     assert result == "The governor then called for new restrictions."
+
+
+def test_fallback_summary_rejects_research_process_text() -> None:
+    assert (
+        _clean_fallback_candidate(
+            "I'll research this story. Let me get more details from the article.",
+            title="Officials change course - Reuters",
+        )
+        is None
+    )
 
 
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:

@@ -709,7 +709,7 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
     cleaned = re.sub(r"\[(?:\d+|[^]]{1,80})]", " ", cleaned)
     cleaned = re.sub(r"[*_#>`]+", " ", cleaned)
     cleaned = re.sub(
-        r"^.*?\(Reuters\)\s*-\s*",
+        r"^.*?\(Reuters\)\s*[-\u2013\u2014]\s*",
         "",
         cleaned,
         count=1,
@@ -735,6 +735,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
             "cookie policy",
             "reuters related",
             "associated press related",
+            "i'll research",
+            "let me get more details",
+            "i've gathered sufficient evidence",
+            "here are my findings",
         )
     ):
         return None
@@ -750,6 +754,10 @@ def _clean_fallback_candidate(value: str, *, title: str) -> str | None:
                 "successfully added",
                 "sign up for",
                 "cookie policy",
+                "i'll research",
+                "let me get more details",
+                "i've gathered sufficient evidence",
+                "here are my findings",
             )
         ):
             break
