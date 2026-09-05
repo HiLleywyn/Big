@@ -196,6 +196,10 @@ class OpenRouterEnricher:
                         "earnings or stock moves, product promotion, appointments, celebrity or "
                         "minor sports items, social-media disputes, and routine statistical "
                         "milestones without a broader consequence. When uncertain, withhold it. "
+                        "A publication-suitable result must include at least two key facts plus "
+                        "either useful context or an unresolved point. These must add information "
+                        "beyond the headline and summary. If the evidence cannot support that "
+                        "without repetition, set publication_suitable to false. "
                         "publication_reason must state the concrete reason in one short sentence."
                     ),
                 },
@@ -1131,6 +1135,9 @@ def _clean_sentence(value: object, name: str, limit: int) -> str:
     cleaned = neutralize_mentions(_strip_emoji(cleaned))
     if not cleaned or len(cleaned) > limit:
         raise EnrichmentError(f"OpenRouter response has invalid {name}")
+    first_word = re.match(r"[A-Za-z]+", cleaned)
+    if name == "summary" and first_word is not None and first_word.group().islower():
+        raise EnrichmentError("OpenRouter response has an incomplete summary opening")
     lowered = cleaned.casefold()
     if _has_page_chrome(cleaned):
         raise EnrichmentError(f"OpenRouter response contains page chrome in {name}")
@@ -1169,10 +1176,21 @@ def _render_analysis(
 
 
 def _needs_web_evidence(articles: Sequence[Article]) -> bool:
-    return not any(
-        article.description.strip() and not repeats_reference(article.description, article.title)
+    descriptions = [
+        article.description.strip()
         for article in articles
-    )
+        if article.description.strip()
+        and not contains_source_artifacts(article.description)
+        and not repeats_reference(article.description, article.title)
+    ]
+    if not descriptions:
+        return True
+    combined = " ".join(descriptions)
+    words = re.findall(r"\b[\w'-]+\b", combined)
+    sentences = [
+        part for part in re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+', combined) if part.strip()
+    ]
+    return len(words) < 45 or len(sentences) < 3
 
 
 def _annotation_sources(annotations: object) -> tuple[str, ...]:

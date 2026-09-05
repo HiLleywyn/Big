@@ -19,6 +19,7 @@ from bigbot.enrichment import (
     FactCheckVerdict,
     OpenRouterEnricher,
     _clean_fallback_candidate,
+    _needs_web_evidence,
     _validate_result,
 )
 
@@ -291,6 +292,10 @@ def test_structured_analysis_rejects_page_modules_and_repeated_results(
             "By The Associated Press Updated September 5, 2026 1:58 am Share BEIJING - "
             "A mudslide killed one person and left 11 missing."
         ),
+        (
+            "Published at : August 26, 2026 Updated at : August 26, 2026 15:11 "
+            "Nearly 400 pilgrims were out of contact after flooding."
+        ),
     ],
 )
 def test_structured_analysis_rejects_search_result_and_video_modules(summary: str) -> None:
@@ -323,6 +328,37 @@ def test_structured_analysis_allows_repeated_single_market_name() -> None:
     result = _validate_result(value, set())
 
     assert "Gold rose 1%" in result.text
+
+
+def test_structured_analysis_rejects_lowercase_summary_opening() -> None:
+    value = {
+        "summary": "envoys arrived in Moscow to begin negotiations.",
+        "key_facts": [],
+        "useful_context": [],
+        "unclear_or_disputed": [],
+        "related_story_ids": [],
+        "latest_update": None,
+    }
+
+    with pytest.raises(EnrichmentError, match="incomplete summary opening"):
+        _validate_result(value, set())
+
+
+def test_thin_article_description_requires_web_evidence() -> None:
+    thin = article(1, "Wire")
+    rich = replace(
+        thin,
+        description=(
+            "Officials approved the measure after a public vote on Friday. The final tally "
+            "was 18 to 7, with two members absent. The measure takes effect next month and "
+            "requires agencies to publish quarterly implementation reports. Local governments "
+            "have 90 days to update their procedures, and the oversight office will publish "
+            "the first compliance review in December."
+        ),
+    )
+
+    assert _needs_web_evidence((thin,))
+    assert not _needs_web_evidence((rich,))
 
 
 async def test_story_analysis_uses_all_sources_and_validates_structure() -> None:
@@ -715,7 +751,17 @@ async def test_story_summary_uses_one_request_when_web_search_is_enabled() -> No
         timeout_seconds=15,
         client=client,
     )
-    result = await enricher.analyze_story(story(1), [article(1, "Wire")], [])
+    detailed_article = replace(
+        article(1, "Wire"),
+        description=(
+            "Officials approved the measure after a public vote on Friday. The final tally "
+            "was 18 to 7, with two members absent. The measure takes effect next month and "
+            "requires agencies to publish quarterly implementation reports. Local governments "
+            "have 90 days to update their procedures, and the oversight office will publish "
+            "the first compliance review in December."
+        ),
+    )
+    result = await enricher.analyze_story(story(1), [detailed_article], [])
     assert len(requests) == 1
     assert "[Wire](https://wire.example/story)" in result.text
     await client.aclose()
@@ -1063,41 +1109,45 @@ async def test_story_uses_source_description_when_structured_json_fails() -> Non
     await client.aclose()
 
 
-async def test_story_researches_after_invalid_json_and_unusable_description() -> None:
+async def test_thin_story_uses_research_when_structured_summary_is_invalid() -> None:
     calls = 0
     cited_url = "https://example.gov/statement"
 
     async def handler(request: httpx2.Request) -> httpx2.Response:
         nonlocal calls
         calls += 1
+        body = json.loads(request.content)
         if calls == 1:
+            assert body["tools"][0]["type"] == "openrouter:web_search"
             return httpx2.Response(
                 200,
-                json={"choices": [{"message": {"content": "not valid json"}}]},
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "Officials confirmed two additional measures on Friday."
+                                ),
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url_citation": {
+                                            "url": cited_url,
+                                            "title": "Official statement",
+                                            "content": (
+                                                "Officials confirmed two additional measures."
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
             )
-        body = json.loads(request.content)
-        assert body["tools"][0]["type"] == "openrouter:web_search"
         return httpx2.Response(
             200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "Officials confirmed two additional measures on Friday.",
-                            "annotations": [
-                                {
-                                    "type": "url_citation",
-                                    "url_citation": {
-                                        "url": cited_url,
-                                        "title": "Official statement",
-                                        "content": "Officials confirmed two additional measures.",
-                                    },
-                                }
-                            ],
-                        }
-                    }
-                ]
-            },
+            json={"choices": [{"message": {"content": "not valid json"}}]},
         )
 
     client = httpx2.AsyncClient(

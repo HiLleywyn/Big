@@ -857,6 +857,14 @@ class FeedService:
                     candidates,
                     focus_article_id=article.id,
                 )
+                analyzed_story = replace(
+                    story,
+                    analysis=result.text,
+                    analysis_state=AnalysisState.READY,
+                )
+                content_quality_error = _publication_quality_error(analyzed_story, articles)
+                if content_quality_error is not None:
+                    raise EnrichmentError(content_quality_error)
                 await self._database.save_story_analysis(
                     story.id,
                     analysis=result.text,
@@ -878,7 +886,14 @@ class FeedService:
                     },
                 )
             except (EnrichmentError, ValueError) as exc:
-                await self._database.mark_story_analysis_failed(story.id, error=str(exc))
+                model_quality_error = str(exc)
+                preserve_ready_analysis = (
+                    story.discord_thread_id is not None
+                    and story.analysis_state is AnalysisState.READY
+                    and bool(story.analysis)
+                )
+                if not preserve_ready_analysis:
+                    await self._database.mark_story_analysis_failed(story.id, error=str(exc))
                 log.warning(
                     "story analysis failed",
                     extra={
@@ -906,6 +921,13 @@ class FeedService:
         related = await self._database.related_stories(current.id)
         updates = await self._database.story_updates(current.id)
         creating = current.discord_thread_id is None
+        if not creating and model_quality_error is not None:
+            await self._database.mark_article_delivery(
+                article.id,
+                DeliveryState.SKIPPED,
+                error=model_quality_error,
+            )
+            return "skipped"
         if creating and summarization_enabled and self._analyzer is not None:
             quality_error = _publication_quality_error(current, articles)
             if quality_error is not None:
@@ -1142,6 +1164,34 @@ def _publication_quality_error(story: Story, articles: list[Article]) -> str | N
             or contains_source_artifacts(summary)
         ):
             return "analysis did not contain a clean factual summary beyond the headline"
+        if len(sections.key_facts) < 2:
+            return "analysis did not contain at least two supporting key facts"
+        if not sections.context and not sections.uncertainty:
+            return "analysis did not contain useful context or a clearly unresolved point"
+        distinct_facts: list[str] = []
+        for fact in sections.key_facts:
+            detail = fact.strip()
+            if (
+                len(detail) < 30
+                or contains_source_artifacts(detail)
+                or repeats_reference(detail, story.title)
+                or repeats_reference(detail, summary)
+                or any(repeats_reference(detail, existing) for existing in distinct_facts)
+            ):
+                continue
+            distinct_facts.append(detail)
+        if len(distinct_facts) < 2:
+            return "analysis key facts repeated the headline, summary, or each other"
+        supporting_context = [*sections.context, *sections.uncertainty]
+        if not any(
+            len(detail.strip()) >= 30
+            and not contains_source_artifacts(detail)
+            and not repeats_reference(detail, story.title)
+            and not repeats_reference(detail, summary)
+            and not any(repeats_reference(detail, fact) for fact in distinct_facts)
+            for detail in supporting_context
+        ):
+            return "analysis context did not add information beyond the summary and key facts"
         statements: list[str] = []
         candidates = [
             *re.split(r'(?<=[.!?])(?:["\u201d\u2019])?\s+|;\s+', summary),

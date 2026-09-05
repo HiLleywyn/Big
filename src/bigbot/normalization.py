@@ -116,6 +116,7 @@ _SOURCE_PAGE_MARKERS = (
     "page contents top quote",
     "policy department for",
     "preservation metadata (premis)",
+    "published at :",
     "print friendly pdf",
     "print options",
     "print with images",
@@ -131,6 +132,7 @@ _SOURCE_PAGE_MARKERS = (
     "this ad supports our journalism",
     "advertisement",
     "your name recipient email",
+    "updated at :",
     "you are here home",
 )
 

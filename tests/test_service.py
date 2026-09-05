@@ -117,11 +117,15 @@ class FakeAnalyzer:
         relate_first: bool = False,
         thin: bool = False,
         summary_only: bool = False,
+        no_context: bool = False,
+        repeated_sections: bool = False,
     ) -> None:
         self.fail = fail
         self.relate_first = relate_first
         self.thin = thin
         self.summary_only = summary_only
+        self.no_context = no_context
+        self.repeated_sections = repeated_sections
         self.calls: list[tuple[str, ...]] = []
         self.closed = False
         self.models: dict[int, str] = {}
@@ -160,15 +164,37 @@ class FakeAnalyzer:
                 ),
                 related_story_ids=related,
             )
+        if self.repeated_sections:
+            return StoryAnalysis(
+                text=(
+                    "**Summary**\n"
+                    "Officials approved the bridge replacement after inspectors documented "
+                    "structural damage during a public safety review.\n\n"
+                    "**Key facts**\n"
+                    "- Officials approved the bridge replacement after inspectors documented "
+                    "structural damage during a public safety review.\n"
+                    "- Inspectors documented structural damage before officials approved the "
+                    "bridge replacement.\n\n"
+                    "**Context**\n"
+                    "- The bridge replacement follows the inspection and approval."
+                ),
+                related_story_ids=related,
+            )
+        text = (
+            "**Summary**\n"
+            f"Available reporting from {len(articles)} sources confirms concrete details "
+            "about the event.\n\n"
+            "**Key facts**\n"
+            "- Officials confirmed the event in a public statement.\n"
+            "- The report identifies when and where the event occurred."
+        )
+        if not self.no_context:
+            text += (
+                "\n\n**Context**\n"
+                "- The change follows a public review that began earlier this year."
+            )
         return StoryAnalysis(
-            text=(
-                "**Summary**\n"
-                f"Available reporting from {len(articles)} sources confirms concrete details "
-                "about the event.\n\n"
-                "**Key facts**\n"
-                "- Officials confirmed the event in a public statement.\n"
-                "- The report identifies when and where the event occurred."
-            ),
+            text=text,
             related_story_ids=related,
             latest_update=(
                 "Officials confirmed additional details." if len(articles) > 1 else None
@@ -837,7 +863,7 @@ async def test_quality_gate_rejects_thin_summary_without_two_supported_facts(tmp
     await database.close()
 
 
-async def test_quality_gate_accepts_two_distinct_facts_in_summary_copy(tmp_path) -> None:
+async def test_quality_gate_rejects_summary_without_supporting_sections(tmp_path) -> None:
     publisher = FakePublisher()
     analyzer = FakeAnalyzer(summary_only=True)
     database, service = await _service(
@@ -851,8 +877,46 @@ async def test_quality_gate_accepts_two_distinct_facts_in_summary_copy(tmp_path)
         "https://news.example/negotiations",
     )
 
-    assert await service.process_item(feed, item) == "new_stories"
-    assert publisher.created == 1
+    assert await service.process_item(feed, item) == "skipped"
+    assert publisher.created == 0
+    await database.close()
+
+
+async def test_quality_gate_rejects_key_facts_without_context_or_uncertainty(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(no_context=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item(
+        "no-context",
+        "Officials announce a consequential policy change",
+        "Wire",
+        "https://news.example/no-context",
+    )
+
+    assert await service.process_item(feed, item) == "skipped"
+    assert publisher.created == 0
+    await database.close()
+
+
+async def test_quality_gate_rejects_sections_that_repeat_the_summary(tmp_path) -> None:
+    publisher = FakePublisher()
+    analyzer = FakeAnalyzer(repeated_sections=True)
+    database, service = await _service(
+        tmp_path / "big.db", publisher, FakeSource(()), analyzer=analyzer
+    )
+    feed = await _feed(database)
+    item = _item(
+        "repeated-sections",
+        "Officials approve bridge replacement",
+        "Wire",
+        "https://news.example/repeated-sections",
+    )
+
+    assert await service.process_item(feed, item) == "skipped"
+    assert publisher.created == 0
     await database.close()
 
 
